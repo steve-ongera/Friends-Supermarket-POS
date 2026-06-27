@@ -274,7 +274,7 @@ npm run dev
 
 ---
 
-## 🛣 Next Steps
+##  Next Steps
 
 1. `serializers.py` for all models above.
 2. `views.py` (DRF `ViewSet`s) + `permissions.py` for role/session checks.
