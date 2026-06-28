@@ -73,8 +73,27 @@ export default function POS() {
   };
 
   const updateQty = (productId, qty) => {
+    if (qty < 1) return;
     setCart((prev) =>
-      prev.map((i) => (i.product_id === productId ? { ...i, quantity: Math.max(qty, 1) } : i))
+      prev.map((i) => (i.product_id === productId ? { ...i, quantity: qty } : i))
+    );
+  };
+
+  const increaseQty = (productId) => {
+    setCart((prev) =>
+      prev.map((i) =>
+        i.product_id === productId ? { ...i, quantity: i.quantity + 1 } : i
+      )
+    );
+  };
+
+  const decreaseQty = (productId) => {
+    setCart((prev) =>
+      prev.map((i) =>
+        i.product_id === productId && i.quantity > 1
+          ? { ...i, quantity: i.quantity - 1 }
+          : i
+      )
     );
   };
 
@@ -369,24 +388,98 @@ export default function POS() {
                       KES {item.unit_price.toFixed(2)} each
                     </div>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <input
-                      type="number"
-                      min="1"
-                      value={item.quantity}
-                      onChange={(e) => updateQty(item.product_id, parseFloat(e.target.value))}
-                      style={{
-                        width: "48px",
-                        padding: "4px 6px",
-                        borderRadius: "6px",
-                        border: "1px solid #e2e6ea",
-                        fontSize: "0.8rem",
-                        textAlign: "center",
-                      }}
-                    />
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    {/* Quantity controls */}
+                    <div style={{ 
+                      display: "flex", 
+                      alignItems: "center", 
+                      gap: "4px",
+                      border: "1px solid #e2e6ea",
+                      borderRadius: "6px",
+                      overflow: "hidden"
+                    }}>
+                      <button
+                        onClick={() => decreaseQty(item.product_id)}
+                        disabled={item.quantity <= 1}
+                        style={{
+                          border: "none",
+                          background: "transparent",
+                          padding: "4px 8px",
+                          cursor: item.quantity <= 1 ? "not-allowed" : "pointer",
+                          color: item.quantity <= 1 ? "#ccc" : "#4b5563",
+                          fontSize: "0.9rem",
+                          fontWeight: "bold",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          transition: "all 0.15s",
+                        }}
+                        onMouseEnter={(e) => {
+                          if (item.quantity > 1) {
+                            e.currentTarget.style.background = "#f0f0f0";
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = "transparent";
+                        }}
+                      >
+                        <i className="bi bi-dash"></i>
+                      </button>
+                      
+                      <input
+                        type="number"
+                        min="1"
+                        value={item.quantity}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value);
+                          if (!isNaN(val)) {
+                            updateQty(item.product_id, val);
+                          }
+                        }}
+                        style={{
+                          width: "40px",
+                          padding: "4px 2px",
+                          border: "none",
+                          borderLeft: "1px solid #e2e6ea",
+                          borderRight: "1px solid #e2e6ea",
+                          fontSize: "0.8rem",
+                          textAlign: "center",
+                          background: "#f9fafb",
+                          outline: "none",
+                          borderRadius: 0,
+                        }}
+                      />
+                      
+                      <button
+                        onClick={() => increaseQty(item.product_id)}
+                        style={{
+                          border: "none",
+                          background: "transparent",
+                          padding: "4px 8px",
+                          cursor: "pointer",
+                          color: "#4b5563",
+                          fontSize: "0.9rem",
+                          fontWeight: "bold",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          transition: "all 0.15s",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = "#f0f0f0";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = "transparent";
+                        }}
+                      >
+                        <i className="bi bi-plus"></i>
+                      </button>
+                    </div>
+                    
                     <div style={{ fontWeight: 700, fontSize: "0.85rem", minWidth: "70px", textAlign: "right" }}>
                       KES {(item.unit_price * item.quantity).toFixed(2)}
                     </div>
+                    
                     <button
                       onClick={() => removeItem(item.product_id)}
                       style={{
@@ -396,6 +489,13 @@ export default function POS() {
                         cursor: "pointer",
                         fontSize: "1rem",
                         padding: "4px",
+                        transition: "all 0.15s",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.color = "#b71c1c";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.color = "#e03131";
                       }}
                     >
                       <i className="bi bi-trash"></i>
@@ -562,6 +662,15 @@ export default function POS() {
         @keyframes spin { to { transform: rotate(360deg); } }
         @media (max-width: 900px) {
           .pos-grid-layout { grid-template-columns: 1fr !important; }
+        }
+        /* Hide number input arrows */
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
+        }
+        input[type="number"] {
+          -moz-appearance: textfield;
         }
       `}</style>
     </div>
