@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
+import posLogo from "../assets/pos_logo.png";
 
 export default function Login() {
   const { login } = useAuth();
@@ -9,6 +10,7 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -40,24 +42,34 @@ export default function Login() {
       }}>
         <div style={{ textAlign: "center", marginBottom: "24px" }}>
           <div style={{ 
-            width: "64px", 
-            height: "64px", 
-            background: "var(--color-primary)",
+            width: "80px", 
+            height: "80px", 
+            background: "var(--color-surface)",
             borderRadius: "var(--radius-lg)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             margin: "0 auto 12px",
-            fontSize: "28px",
-            color: "#fff"
+            padding: "8px",
+            boxShadow: "var(--shadow-sm)",
+            border: "1px solid var(--color-border-light)"
           }}>
-            <i className="bi bi-shop"></i>
+            <img 
+              src={posLogo} 
+              alt="Friends POS" 
+              style={{ 
+                width: "100%", 
+                height: "100%", 
+                objectFit: "contain"
+              }} 
+            />
           </div>
           <h2 style={{ 
             fontSize: "1.5rem", 
             fontWeight: "700", 
-            margin: 0,
-            letterSpacing: "-0.02em"
+            margin: "8px 0 0 0",
+            letterSpacing: "-0.02em",
+            color: "var(--color-primary-dark)"
           }}>
             Friends POS
           </h2>
@@ -86,15 +98,43 @@ export default function Login() {
 
           <div className="form-group">
             <label htmlFor="password">Password</label>
-            <input
-              id="password"
-              className="form-control"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter your password"
-              required
-            />
+            <div style={{ position: "relative" }}>
+              <input
+                id="password"
+                className="form-control"
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
+                style={{ paddingRight: "40px" }}
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                style={{
+                  position: "absolute",
+                  right: "10px",
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  background: "none",
+                  border: "none",
+                  color: "var(--color-text-muted)",
+                  cursor: "pointer",
+                  padding: "4px",
+                  fontSize: "1.1rem",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transition: "color 0.15s"
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.color = "var(--color-text)"}
+                onMouseLeave={(e) => e.currentTarget.style.color = "var(--color-text-muted)"}
+                tabIndex="-1"
+              >
+                <i className={`bi ${showPassword ? "bi-eye-slash" : "bi-eye"}`}></i>
+              </button>
+            </div>
           </div>
 
           {error && (

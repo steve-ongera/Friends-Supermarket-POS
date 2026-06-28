@@ -1,6 +1,7 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
+import posLogo from "../assets/pos_logo.png";
 
 const NAV_ITEMS = [
   { to: "/", icon: "bi-speedometer2", label: "Dashboard", roles: null },
@@ -31,7 +32,16 @@ export default function Sidebar() {
     <aside className="sidebar" id="app-sidebar">
       <div className="sidebar-brand">
         <div className="brand-icon">
-          <i className="bi bi-shop"></i>
+          <img 
+            src={posLogo} 
+            alt="Friends POS" 
+            style={{ 
+              width: "100%", 
+              height: "100%", 
+              objectFit: "contain",
+              filter: "brightness(0) invert(1)"
+            }} 
+          />
         </div>
         <div className="brand-text">
           <span>Friends POS</span>
