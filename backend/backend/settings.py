@@ -16,8 +16,12 @@ environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
 
 SECRET_KEY = env("SECRET_KEY", default="dev-insecure-secret-key-change-me")
 DEBUG = env.bool("DEBUG", default=True)
-ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["*"])
 
+ALLOWED_HOSTS = [
+    "127.0.0.1",
+    "localhost",
+    "6356-102-213-93-58.ngrok-free.app",
+]
 
 # ---------------------------------------------------------------------------
 # Applications
@@ -171,7 +175,7 @@ MPESA_CONSUMER_SECRET = env("MPESA_CONSUMER_SECRET", default="")
 MPESA_SHORTCODE = env("MPESA_SHORTCODE", default="")
 MPESA_PASSKEY = env("MPESA_PASSKEY", default="")
 MPESA_CALLBACK_URL = env(
-    "MPESA_CALLBACK_URL", default="https://yourdomain.com/api/payments/mpesa/callback/"
+    "MPESA_CALLBACK_URL", default="https://6356-102-213-93-58.ngrok-free.app/api/payments/mpesa/callback/"
 )
 
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:5173")

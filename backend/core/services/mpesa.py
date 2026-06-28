@@ -5,8 +5,11 @@ M-Pesa Daraja API integration: access token + STK Push (Lipa Na M-Pesa Online).
 
 import base64
 import datetime
+import re
+
 import requests
 from django.conf import settings
+
 
 DARAJA_BASE_URL = (
     "https://sandbox.safaricom.co.ke" if settings.MPESA_ENV == "sandbox"
@@ -14,12 +17,55 @@ DARAJA_BASE_URL = (
 )
 
 
+class MpesaError(Exception):
+    """Raised when Daraja rejects a request. Carries the parsed error body."""
+
+    def __init__(self, message, status_code=None, daraja_body=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.daraja_body = daraja_body or {}
+
+
+def normalize_phone_number(raw_phone):
+    """
+    Normalizes any common Kenyan phone format to Daraja's required
+    2547XXXXXXXX / 2541XXXXXXXX (12 digits, no '+', no leading 0).
+
+    Accepts: 0712345678, 712345678, +254712345678, 254712345678,
+             with spaces or dashes.
+    Raises MpesaError if the result isn't a valid Safaricom-format number.
+    """
+    digits = re.sub(r"\D", "", raw_phone or "")
+
+    if digits.startswith("254") and len(digits) == 12:
+        normalized = digits
+    elif digits.startswith("0") and len(digits) == 10:
+        normalized = "254" + digits[1:]
+    elif len(digits) == 9 and digits[0] in ("7", "1"):
+        normalized = "254" + digits
+    else:
+        normalized = digits
+
+    if not re.fullmatch(r"254(7|1)\d{8}", normalized):
+        raise MpesaError(
+            f"Invalid phone number format: '{raw_phone}'. "
+            "Expected a Kenyan Safaricom number, e.g. 0712345678 or 254712345678."
+        )
+    return normalized
+
+
 def get_access_token():
     url = f"{DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials"
     response = requests.get(
         url, auth=(settings.MPESA_CONSUMER_KEY, settings.MPESA_CONSUMER_SECRET), timeout=30
     )
-    response.raise_for_status()
+    if not response.ok:
+        raise MpesaError(
+            "Failed to obtain M-Pesa access token. Check MPESA_CONSUMER_KEY/SECRET "
+            f"and MPESA_ENV. Daraja responded {response.status_code}: {response.text}",
+            status_code=response.status_code,
+            daraja_body=_safe_json(response),
+        )
     return response.json()["access_token"]
 
 
@@ -30,11 +76,24 @@ def _generate_password_and_timestamp():
     return password, timestamp
 
 
+def _safe_json(response):
+    try:
+        return response.json()
+    except ValueError:
+        return {"raw_text": response.text}
+
+
 def initiate_stk_push(phone_number, amount, account_reference, transaction_desc):
     """
     Triggers an STK Push prompt on the customer's/cashier's phone.
     Returns the raw Daraja response dict (MerchantRequestID, CheckoutRequestID, etc).
+
+    Raises MpesaError (with the parsed Daraja error body attached) on failure,
+    instead of a bare requests.HTTPError, so callers can surface a useful
+    message instead of a generic 500.
     """
+    normalized_phone = normalize_phone_number(phone_number)
+
     access_token = get_access_token()
     password, timestamp = _generate_password_and_timestamp()
 
@@ -46,14 +105,25 @@ def initiate_stk_push(phone_number, amount, account_reference, transaction_desc)
         "Timestamp": timestamp,
         "TransactionType": "CustomerPayBillOnline",
         "Amount": int(amount),
-        "PartyA": phone_number,
+        "PartyA": normalized_phone,
         "PartyB": settings.MPESA_SHORTCODE,
-        "PhoneNumber": phone_number,
+        "PhoneNumber": normalized_phone,
         "CallBackURL": settings.MPESA_CALLBACK_URL,
-        "AccountReference": account_reference,
-        "TransactionDesc": transaction_desc,
+        "AccountReference": account_reference[:12],  # Daraja caps this at 12 chars
+        "TransactionDesc": transaction_desc[:13],     # Daraja caps this at 13 chars
     }
 
     response = requests.post(url, json=payload, headers=headers, timeout=30)
-    response.raise_for_status()
+
+    if not response.ok:
+        body = _safe_json(response)
+        # Daraja error bodies look like:
+        # {"requestId": "...", "errorCode": "400.002.02", "errorMessage": "Bad Request - ..."}
+        error_message = body.get("errorMessage") or body.get("errorMessage") or str(body)
+        raise MpesaError(
+            f"Daraja STK push rejected ({response.status_code}): {error_message}",
+            status_code=response.status_code,
+            daraja_body=body,
+        )
+
     return response.json()
