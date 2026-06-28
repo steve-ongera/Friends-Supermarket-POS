@@ -1,7 +1,16 @@
 import React, { useEffect, useRef, useState } from "react";
-import { lookupProductByBarcode, createSale, getProducts } from "../services/api";
+import {
+  lookupProductByBarcode,
+  createSale,
+  getProducts,
+  initiateSTKPush,
+  getPaymentStatus,
+} from "../services/api";
 import { useSession } from "../context/SessionContext.jsx";
 import { useNavigate } from "react-router-dom";
+
+const POLL_INTERVAL_MS = 3000;
+const MAX_POLL_ATTEMPTS = 40; // ~2 minutes before we tell the cashier to force-check or retry
 
 export default function POS() {
   const [barcode, setBarcode] = useState("");
@@ -17,6 +26,14 @@ export default function POS() {
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [justAddedId, setJustAddedId] = useState(null);
 
+  // --- M-Pesa STK push state ---
+  const [mpesaPhone, setMpesaPhone] = useState("");
+  const [mpesaStatus, setMpesaStatus] = useState("idle"); // idle | sending | pending | success | failed
+  const [mpesaPayment, setMpesaPayment] = useState(null); // payment object from backend
+  const [mpesaError, setMpesaError] = useState("");
+  const pollTimerRef = useRef(null);
+  const pollAttemptsRef = useRef(0);
+
   const inputRef = useRef(null);
   const { refreshSession, setShowUnlockModal } = useSession();
   const navigate = useNavigate();
@@ -31,6 +48,34 @@ export default function POS() {
       .catch(() => {})
       .finally(() => setLoadingProducts(false));
   }, []);
+
+  // Clean up any active poll timer on unmount
+  useEffect(() => {
+    return () => stopPolling();
+  }, []);
+
+  const stopPolling = () => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
+
+  const resetMpesaFlow = () => {
+    stopPolling();
+    pollAttemptsRef.current = 0;
+    setMpesaStatus("idle");
+    setMpesaPayment(null);
+    setMpesaError("");
+  };
+
+  // Reset the M-Pesa flow whenever the cart changes after a completed/failed attempt,
+  // or when the cashier switches payment method away from MPESA.
+  useEffect(() => {
+    if (paymentMethod !== "MPESA") {
+      resetMpesaFlow();
+    }
+  }, [paymentMethod]);
 
   const addProductToCart = (product) => {
     const sellingPrice = parseFloat(product.selling_price);
@@ -48,6 +93,7 @@ export default function POS() {
           name: product.name,
           unit_price: sellingPrice,
           quantity: 1,
+          image: product.image || null,
         },
       ];
     });
@@ -101,8 +147,9 @@ export default function POS() {
     setCart((prev) => prev.filter((i) => i.product_id !== productId));
   };
 
-  const handleCheckout = async () => {
-    if (cart.length === 0) return;
+  // Finalizes the sale in the backend (stock deduction, receipt, etc).
+  // Shared by both the CASH/CARD path and the post-MPESA-success path.
+  const finalizeSale = async (extra = {}) => {
     setPlacingOrder(true);
     setError("");
     try {
@@ -110,9 +157,11 @@ export default function POS() {
         items: cart.map((i) => ({ product_id: i.product_id, quantity: i.quantity })),
         payment_method: paymentMethod,
         amount_tendered: amountTendered || null,
+        ...extra,
       });
       setCart([]);
       setAmountTendered("");
+      resetMpesaFlow();
       await refreshSession();
       navigate(`/receipt/${res.data.id}`);
     } catch (err) {
@@ -126,6 +175,128 @@ export default function POS() {
     }
   };
 
+  // --- M-Pesa STK push flow ---
+
+  const handleSendStkPush = async () => {
+    const phoneDigits = mpesaPhone.replace(/\D/g, "");
+    if (!phoneDigits) {
+      setMpesaError("Enter the customer's phone number first.");
+      return;
+    }
+    if (cart.length === 0) {
+      setMpesaError("Add items to the cart before charging M-Pesa.");
+      return;
+    }
+
+    setMpesaStatus("sending");
+    setMpesaError("");
+
+    try {
+      const res = await initiateSTKPush({
+        phone_number: mpesaPhone,
+        amount: subtotal,
+        purpose: "SALE",
+      });
+      setMpesaPayment(res.data.payment);
+      setMpesaStatus("pending");
+      pollAttemptsRef.current = 0;
+      pollPaymentStatus(res.data.payment.reference_code);
+    } catch (err) {
+      setMpesaStatus("failed");
+      setMpesaError(
+        err.response?.data?.detail ||
+          "Could not send the M-Pesa prompt. Check the number and try again."
+      );
+    }
+  };
+
+  const pollPaymentStatus = (referenceCode) => {
+    stopPolling();
+    pollTimerRef.current = setTimeout(async () => {
+      pollAttemptsRef.current += 1;
+      try {
+        const res = await getPaymentStatus(referenceCode);
+        const payment = res.data;
+        setMpesaPayment(payment);
+
+        if (payment.status === "SUCCESS") {
+          setMpesaStatus("success");
+          stopPolling();
+          // Auto-complete the sale once payment is confirmed
+          finalizeSale({ payment_reference: payment.reference_code });
+          return;
+        }
+        if (payment.status === "FAILED") {
+          setMpesaStatus("failed");
+          setMpesaError(payment.result_desc || "Payment failed or was cancelled on the customer's phone.");
+          stopPolling();
+          return;
+        }
+
+        // still PENDING
+        if (pollAttemptsRef.current >= MAX_POLL_ATTEMPTS) {
+          setMpesaStatus("pending"); // stays pending, but we stop auto-polling
+          setMpesaError(
+            "Still waiting on confirmation. If the customer has already paid, use 'Force confirm paid' below, or switch to cash."
+          );
+          stopPolling();
+          return;
+        }
+
+        pollPaymentStatus(referenceCode);
+      } catch {
+        // Network blip — keep trying until max attempts
+        if (pollAttemptsRef.current >= MAX_POLL_ATTEMPTS) {
+          stopPolling();
+          setMpesaError("Lost connection while checking payment status. Try 'Check again' below.");
+        } else {
+          pollPaymentStatus(referenceCode);
+        }
+      }
+    }, POLL_INTERVAL_MS);
+  };
+
+  const handleCheckAgain = () => {
+    if (!mpesaPayment?.reference_code) return;
+    setMpesaError("");
+    pollAttemptsRef.current = 0;
+    pollPaymentStatus(mpesaPayment.reference_code);
+  };
+
+  // Manual override: cashier has visually confirmed with the customer that
+  // the M-Pesa payment went through (e.g. customer shows the SMS) even though
+  // our callback/poll hasn't caught up yet. Completes the sale immediately.
+  const handleForceConfirmPaid = () => {
+    stopPolling();
+    finalizeSale({
+      payment_reference: mpesaPayment?.reference_code || "",
+      force_confirmed: true,
+    });
+  };
+
+  const handleRetryStkPush = () => {
+    resetMpesaFlow();
+  };
+
+  const handleSwitchToCash = () => {
+    resetMpesaFlow();
+    setPaymentMethod("CASH");
+  };
+
+  // --- Main checkout button handler ---
+  const handleCheckout = async () => {
+    if (cart.length === 0) return;
+
+    if (paymentMethod === "MPESA") {
+      // For M-Pesa, "Complete Sale" doesn't fire directly — the STK push
+      // button drives the flow, and finalizeSale() runs automatically once
+      // payment is confirmed (or via Force confirm).
+      return;
+    }
+
+    finalizeSale();
+  };
+
   const filteredProducts = allProducts.filter((p) => {
     const q = productSearch.trim().toLowerCase();
     if (!q) return true;
@@ -135,6 +306,8 @@ export default function POS() {
       (p.category_name || "").toLowerCase().includes(q)
     );
   });
+
+  const mpesaBusy = mpesaStatus === "sending" || mpesaStatus === "pending";
 
   return (
     <div>
@@ -296,6 +469,39 @@ export default function POS() {
                       minHeight: "92px",
                     }}
                   >
+                    {p.image ? (
+                      <img
+                        src={p.image}
+                        alt={p.name}
+                        style={{
+                          width: "100%",
+                          height: "64px",
+                          objectFit: "cover",
+                          borderRadius: "6px",
+                          marginBottom: "4px",
+                          background: "#f3f4f6",
+                        }}
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none";
+                        }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width: "100%",
+                          height: "64px",
+                          borderRadius: "6px",
+                          marginBottom: "4px",
+                          background: "#f3f4f6",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: "#c1c7cd",
+                        }}
+                      >
+                        <i className="bi bi-image" style={{ fontSize: "1.4rem" }}></i>
+                      </div>
+                    )}
                     <span
                       style={{
                         fontSize: "0.85rem",
@@ -382,17 +588,52 @@ export default function POS() {
                     borderBottom: "1px solid #e2e6ea",
                   }}
                 >
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: "0.88rem" }}>{item.name}</div>
-                    <div style={{ fontSize: "0.75rem", color: "#6b7280" }}>
-                      KES {item.unit_price.toFixed(2)} each
+                  <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: "8px" }}>
+                    {item.image ? (
+                      <img
+                        src={item.image}
+                        alt={item.name}
+                        style={{
+                          width: "32px",
+                          height: "32px",
+                          objectFit: "cover",
+                          borderRadius: "6px",
+                          flexShrink: 0,
+                          background: "#f3f4f6",
+                        }}
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none";
+                        }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width: "32px",
+                          height: "32px",
+                          borderRadius: "6px",
+                          flexShrink: 0,
+                          background: "#f3f4f6",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          color: "#c1c7cd",
+                        }}
+                      >
+                        <i className="bi bi-image" style={{ fontSize: "0.8rem" }}></i>
+                      </div>
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: "0.88rem" }}>{item.name}</div>
+                      <div style={{ fontSize: "0.75rem", color: "#6b7280" }}>
+                        KES {item.unit_price.toFixed(2)} each
+                      </div>
                     </div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                     {/* Quantity controls */}
-                    <div style={{ 
-                      display: "flex", 
-                      alignItems: "center", 
+                    <div style={{
+                      display: "flex",
+                      alignItems: "center",
                       gap: "4px",
                       border: "1px solid #e2e6ea",
                       borderRadius: "6px",
@@ -425,7 +666,7 @@ export default function POS() {
                       >
                         <i className="bi bi-dash"></i>
                       </button>
-                      
+
                       <input
                         type="number"
                         min="1"
@@ -449,7 +690,7 @@ export default function POS() {
                           borderRadius: 0,
                         }}
                       />
-                      
+
                       <button
                         onClick={() => increaseQty(item.product_id)}
                         style={{
@@ -475,11 +716,11 @@ export default function POS() {
                         <i className="bi bi-plus"></i>
                       </button>
                     </div>
-                    
+
                     <div style={{ fontWeight: 700, fontSize: "0.85rem", minWidth: "70px", textAlign: "right" }}>
                       KES {(item.unit_price * item.quantity).toFixed(2)}
                     </div>
-                    
+
                     <button
                       onClick={() => removeItem(item.product_id)}
                       style={{
@@ -528,6 +769,7 @@ export default function POS() {
             <select
               value={paymentMethod}
               onChange={(e) => setPaymentMethod(e.target.value)}
+              disabled={mpesaBusy}
               style={{
                 width: "100%",
                 padding: "10px 12px",
@@ -583,61 +825,242 @@ export default function POS() {
             </div>
           )}
 
+          {/* --- M-Pesa flow --- */}
           {paymentMethod === "MPESA" && (
             <div
               style={{
                 background: "#fff4e0",
-                padding: "10px 12px",
-                borderRadius: "8px",
+                padding: "14px",
+                borderRadius: "10px",
                 marginBottom: "14px",
-                fontSize: "0.8rem",
+                fontSize: "0.85rem",
                 color: "#4b5563",
               }}
             >
-              <i className="bi bi-info-circle"></i> Customer will receive an M-Pesa STK Push prompt.
+              {mpesaStatus === "idle" && (
+                <>
+                  <label style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, marginBottom: "6px" }}>
+                    Customer Phone Number
+                  </label>
+                  <input
+                    type="tel"
+                    value={mpesaPhone}
+                    onChange={(e) => setMpesaPhone(e.target.value)}
+                    placeholder="0712345678"
+                    style={{
+                      width: "100%",
+                      padding: "10px 12px",
+                      borderRadius: "8px",
+                      border: "1px solid #e2e6ea",
+                      fontSize: "0.9rem",
+                      marginBottom: "10px",
+                    }}
+                  />
+                  {mpesaError && (
+                    <div style={{ color: "#e03131", fontSize: "0.8rem", marginBottom: "10px" }}>
+                      <i className="bi bi-exclamation-circle" style={{ marginRight: 4 }}></i>
+                      {mpesaError}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleSendStkPush}
+                    disabled={cart.length === 0}
+                    style={{
+                      width: "100%",
+                      padding: "10px",
+                      borderRadius: "8px",
+                      border: "none",
+                      background: cart.length === 0 ? "#e0c08a" : "#f59f00",
+                      color: "#fff",
+                      fontWeight: 700,
+                      fontSize: "0.88rem",
+                      cursor: cart.length === 0 ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    <i className="bi bi-phone" style={{ marginRight: 6 }}></i>
+                    Send STK Push (KES {subtotal.toFixed(2)})
+                  </button>
+                </>
+              )}
+
+              {mpesaStatus === "sending" && (
+                <div style={{ textAlign: "center", padding: "8px 0" }}>
+                  <i className="bi bi-arrow-repeat" style={{ marginRight: 6 }}></i>
+                  Sending prompt to {mpesaPhone}...
+                </div>
+              )}
+
+              {mpesaStatus === "pending" && (
+                <div>
+                  <div style={{ textAlign: "center", marginBottom: "10px" }}>
+                    <i className="bi bi-hourglass-split" style={{ marginRight: 6 }}></i>
+                    Waiting for {mpesaPhone} to approve the M-Pesa prompt...
+                  </div>
+                  {mpesaError && (
+                    <div style={{ color: "#e03131", fontSize: "0.8rem", marginBottom: "10px" }}>
+                      <i className="bi bi-exclamation-circle" style={{ marginRight: 4 }}></i>
+                      {mpesaError}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+                    <button
+                      type="button"
+                      onClick={handleCheckAgain}
+                      style={{
+                        flex: 1,
+                        padding: "9px",
+                        borderRadius: "8px",
+                        border: "1px solid #f59f00",
+                        background: "transparent",
+                        color: "#b06400",
+                        fontWeight: 600,
+                        fontSize: "0.82rem",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <i className="bi bi-arrow-clockwise" style={{ marginRight: 4 }}></i>
+                      Check again
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleForceConfirmPaid}
+                      disabled={placingOrder}
+                      style={{
+                        flex: 1,
+                        padding: "9px",
+                        borderRadius: "8px",
+                        border: "none",
+                        background: "#2f9e44",
+                        color: "#fff",
+                        fontWeight: 600,
+                        fontSize: "0.82rem",
+                        cursor: placingOrder ? "not-allowed" : "pointer",
+                      }}
+                      title="Use only if the customer has shown you their M-Pesa confirmation SMS"
+                    >
+                      <i className="bi bi-shield-check" style={{ marginRight: 4 }}></i>
+                      Force confirm paid
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSwitchToCash}
+                    style={{
+                      width: "100%",
+                      padding: "8px",
+                      borderRadius: "8px",
+                      border: "1px solid #e2e6ea",
+                      background: "transparent",
+                      color: "#6b7280",
+                      fontWeight: 600,
+                      fontSize: "0.78rem",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Cancel & switch to cash
+                  </button>
+                </div>
+              )}
+
+              {mpesaStatus === "success" && (
+                <div style={{ textAlign: "center", color: "#2f9e44", fontWeight: 600 }}>
+                  <i className="bi bi-check-circle-fill" style={{ marginRight: 6 }}></i>
+                  Payment confirmed — finishing sale...
+                </div>
+              )}
+
+              {mpesaStatus === "failed" && (
+                <div>
+                  <div style={{ color: "#e03131", fontSize: "0.85rem", marginBottom: "10px" }}>
+                    <i className="bi bi-x-circle" style={{ marginRight: 4 }}></i>
+                    {mpesaError || "Payment failed."}
+                  </div>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      type="button"
+                      onClick={handleRetryStkPush}
+                      style={{
+                        flex: 1,
+                        padding: "9px",
+                        borderRadius: "8px",
+                        border: "none",
+                        background: "#f59f00",
+                        color: "#fff",
+                        fontWeight: 600,
+                        fontSize: "0.82rem",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <i className="bi bi-arrow-repeat" style={{ marginRight: 4 }}></i>
+                      Try again
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSwitchToCash}
+                      style={{
+                        flex: 1,
+                        padding: "9px",
+                        borderRadius: "8px",
+                        border: "1px solid #e2e6ea",
+                        background: "transparent",
+                        color: "#6b7280",
+                        fontWeight: 600,
+                        fontSize: "0.82rem",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Switch to cash
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          <button
-            onClick={handleCheckout}
-            disabled={cart.length === 0 || placingOrder}
-            style={{
-              width: "100%",
-              padding: "14px",
-              borderRadius: "8px",
-              border: "none",
-              background: cart.length === 0 || placingOrder ? "#9bbfa8" : "#1d6f42",
-              color: "#fff",
-              fontWeight: 700,
-              fontSize: "0.95rem",
-              cursor: cart.length === 0 || placingOrder ? "not-allowed" : "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "8px",
-            }}
-          >
-            {placingOrder ? (
-              <>
-                <span
-                  style={{
-                    width: "16px",
-                    height: "16px",
-                    border: "2px solid rgba(255,255,255,0.4)",
-                    borderTopColor: "#fff",
-                    borderRadius: "50%",
-                    display: "inline-block",
-                    animation: "spin 0.7s linear infinite",
-                  }}
-                ></span>
-                Processing...
-              </>
-            ) : (
-              <>
-                <i className="bi bi-check-circle"></i> Complete Sale
-              </>
-            )}
-          </button>
+          {/* "Complete Sale" only drives CASH/CARD now — M-Pesa is driven by the STK flow above */}
+          {paymentMethod !== "MPESA" && (
+            <button
+              onClick={handleCheckout}
+              disabled={cart.length === 0 || placingOrder}
+              style={{
+                width: "100%",
+                padding: "14px",
+                borderRadius: "8px",
+                border: "none",
+                background: cart.length === 0 || placingOrder ? "#9bbfa8" : "#1d6f42",
+                color: "#fff",
+                fontWeight: 700,
+                fontSize: "0.95rem",
+                cursor: cart.length === 0 || placingOrder ? "not-allowed" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "8px",
+              }}
+            >
+              {placingOrder ? (
+                <>
+                  <span
+                    style={{
+                      width: "16px",
+                      height: "16px",
+                      border: "2px solid rgba(255,255,255,0.4)",
+                      borderTopColor: "#fff",
+                      borderRadius: "50%",
+                      display: "inline-block",
+                      animation: "spin 0.7s linear infinite",
+                    }}
+                  ></span>
+                  Processing...
+                </>
+              ) : (
+                <>
+                  <i className="bi bi-check-circle"></i> Complete Sale
+                </>
+              )}
+            </button>
+          )}
 
           {cart.length > 0 && (
             <div
