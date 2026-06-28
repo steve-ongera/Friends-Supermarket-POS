@@ -125,3 +125,4 @@ export const voidSale = (id) => api.post(`/sales/${id}/void/`);
    DASHBOARD
    ============================================================ */
 export const getDashboardSummary = () => api.get("/dashboard/summary/");
+export const getDashboardCharts = () => api.get("/dashboard/charts/");
