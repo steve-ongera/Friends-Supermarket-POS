@@ -105,8 +105,27 @@ export const deleteSupplier = (id) => api.delete(`/suppliers/${id}/`);
    ============================================================ */
 export const getProducts = (params) => api.get("/products/", { params });
 export const getProduct = (id) => api.get(`/products/${id}/`);
-export const createProduct = (data) => api.post("/products/", data);
-export const updateProduct = (id, data) => api.patch(`/products/${id}/`, data);
+// Builds a FormData payload from a plain object — needed because Product
+// has an image file field. Skips null/undefined/empty-string values so
+// optional fields (category, supplier, image, sku) don't get sent as blanks.
+function toProductFormData(data) {
+  const formData = new FormData();
+  Object.entries(data).forEach(([key, value]) => {
+    if (value === null || value === undefined || value === "") return;
+    formData.append(key, value);
+  });
+  return formData;
+}
+
+export const createProduct = (data) =>
+  api.post("/products/", toProductFormData(data), {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+
+export const updateProduct = (id, data) =>
+  api.patch(`/products/${id}/`, toProductFormData(data), {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
 export const deleteProduct = (id) => api.delete(`/products/${id}/`);
 export const lookupProductByBarcode = (barcode) => api.get(`/products/lookup/${barcode}/`);
 export const adjustStock = (productId, data) =>
