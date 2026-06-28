@@ -6,7 +6,7 @@ Friends Supermarket POS & Inventory SaaS
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import Sum, F, Q
+from django.db.models import Sum, F, Q, Count
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
@@ -563,5 +563,92 @@ class DashboardSummaryView(APIView):
                 "low_stock_count": low_stock_count,
                 "active_sessions": active_sessions,
                 "locked_sessions": locked_sessions,
+            }
+        )
+
+
+class DashboardChartsView(APIView):
+    """
+    Aggregated data for the dashboard visualizations:
+    - sales_trend: revenue per day, last 14 days (line chart)
+    - payment_breakdown: count per payment method (pie chart)
+    - top_products: top 5 best-selling products by quantity (bar chart)
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from datetime import timedelta
+        from django.db.models.functions import TruncDate
+
+        supermarket = request.user.supermarket
+        today = timezone.localdate()
+        start_date = today - timedelta(days=13)
+
+        # --- Sales trend (line chart): revenue per day, last 14 days ---
+        trend_qs = (
+            Sale.objects.filter(
+                supermarket=supermarket,
+                status=Sale.Status.COMPLETED,
+                created_at__date__gte=start_date,
+            )
+            .annotate(day=TruncDate("created_at"))
+            .values("day")
+            .annotate(revenue=Sum("total"), sales_count=Count("id"))
+            .order_by("day")
+        )
+        trend_by_day = {row["day"]: row for row in trend_qs}
+
+        sales_trend = []
+        for i in range(14):
+            day = start_date + timedelta(days=i)
+            row = trend_by_day.get(day)
+            sales_trend.append(
+                {
+                    "date": day.isoformat(),
+                    "revenue": float(row["revenue"]) if row else 0.0,
+                    "sales_count": row["sales_count"] if row else 0,
+                }
+            )
+
+        # --- Payment method breakdown (pie chart) ---
+        payment_qs = (
+            Sale.objects.filter(supermarket=supermarket, status=Sale.Status.COMPLETED)
+            .values("payment_method")
+            .annotate(count=Count("id"), total=Sum("total"))
+            .order_by("-count")
+        )
+        payment_breakdown = [
+            {
+                "payment_method": row["payment_method"],
+                "count": row["count"],
+                "total": float(row["total"] or 0),
+            }
+            for row in payment_qs
+        ]
+
+        # --- Top products by quantity sold (bar chart) ---
+        top_products_qs = (
+            SaleItem.objects.filter(
+                sale__supermarket=supermarket, sale__status=Sale.Status.COMPLETED
+            )
+            .values("product_name")
+            .annotate(quantity_sold=Sum("quantity"), revenue=Sum("line_total"))
+            .order_by("-quantity_sold")[:5]
+        )
+        top_products = [
+            {
+                "product_name": row["product_name"],
+                "quantity_sold": float(row["quantity_sold"]),
+                "revenue": float(row["revenue"] or 0),
+            }
+            for row in top_products_qs
+        ]
+
+        return Response(
+            {
+                "sales_trend": sales_trend,
+                "payment_breakdown": payment_breakdown,
+                "top_products": top_products,
             }
         )
