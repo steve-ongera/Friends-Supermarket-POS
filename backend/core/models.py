@@ -49,7 +49,10 @@ class Supermarket(models.Model):
     kra_pin = models.CharField(max_length=20, blank=True, help_text="KRA PIN for receipts")
     logo = models.ImageField(upload_to="supermarket_logos/", blank=True, null=True)
 
-    mpesa_shortcode = models.CharField(max_length=15, blank=True, help_text="Till/Paybill for receiving customer payments (optional)")
+    mpesa_shortcode = models.CharField(
+        max_length=15, blank=True,
+        help_text="Till/Paybill for receiving customer payments (optional)"
+    )
 
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -80,14 +83,17 @@ class User(AbstractUser):
     )
     role = models.CharField(max_length=10, choices=Role.choices, default=Role.CASHIER)
     phone_number = models.CharField(max_length=20, blank=True)
-    is_locked = models.BooleanField(default=False, help_text="Locked when daily free sales quota is exhausted")
+    is_locked = models.BooleanField(
+        default=False,
+        help_text="Locked when daily free sales quota is exhausted"
+    )
 
     def __str__(self):
         return f"{self.get_full_name() or self.username} ({self.role})"
 
 
 # ---------------------------------------------------------------------------
-# Subscription Packages & Billing (pay-per-session unlock model)
+# Subscription Packages & Billing (stackable / queued model)
 # ---------------------------------------------------------------------------
 
 class Package(models.Model):
@@ -104,7 +110,9 @@ class Package(models.Model):
         blank=True,
         help_text="Sales allowed before lock. Leave blank for unlimited (no lock ever applied).",
     )
-    unlock_price = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("100.00"))
+    unlock_price = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("100.00")
+    )
     session_duration_hours = models.PositiveIntegerField(
         default=24, help_text="Validity of an unlocked session, in hours"
     )
@@ -112,26 +120,122 @@ class Package(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.name} ({self.daily_free_sales} sales/day, KES {self.unlock_price} to unlock)"
+        limit = self.daily_free_sales if self.daily_free_sales is not None else "unlimited"
+        return f"{self.name} ({limit} sales/day, KES {self.unlock_price} to unlock)"
 
 
 class Subscription(models.Model):
-    """A supermarket's active package subscription."""
+    """
+    Each row represents ONE purchased subscription bundle.
 
-    supermarket = models.OneToOneField(Supermarket, on_delete=models.CASCADE, related_name="subscription")
-    package = models.ForeignKey(Package, on_delete=models.PROTECT, related_name="subscriptions")
-    started_at = models.DateTimeField(auto_now_add=True)
-    is_active = models.BooleanField(default=True)
+    Subscriptions are STACKABLE / QUEUED — like mobile data bundles:
+    - A supermarket can have multiple active/queued subscriptions at once.
+    - status=ACTIVE  -> currently being consumed (sales drawn from it).
+    - status=QUEUED  -> paid and waiting; auto-promotes when the active
+                        one is fully consumed.
+    - status=EXPIRED -> consumed (sales_remaining==0) or past expiry date.
+
+    When a new subscription is purchased:
+    - If no ACTIVE subscription exists -> it becomes ACTIVE immediately.
+    - If an ACTIVE subscription already exists -> it joins the QUEUED stack.
+
+    When the ACTIVE subscription is consumed (sales_remaining hits 0):
+    - The oldest QUEUED subscription is promoted to ACTIVE automatically.
+    - Sales from the new subscription start from where the old one ended.
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        QUEUED = "QUEUED", "Queued"
+        EXPIRED = "EXPIRED", "Expired / Consumed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    supermarket = models.ForeignKey(
+        Supermarket, on_delete=models.CASCADE, related_name="subscriptions"
+    )
+    package = models.ForeignKey(
+        Package, on_delete=models.PROTECT, related_name="subscriptions"
+    )
+
+    # How many sales this bundle originally included (snapshot at purchase time).
+    sales_allocated = models.PositiveIntegerField(
+        default=0,
+        help_text="Total sales granted by this subscription purchase."
+    )
+    # Counts down as sales are made; when 0 the next queued sub is promoted.
+    sales_remaining = models.PositiveIntegerField(
+        default=0,
+        help_text="Sales still available from this bundle."
+    )
+
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.QUEUED
+    )
+
+    # Linked to the payment that purchased this subscription.
+    payment = models.OneToOneField(
+        "Payment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="subscription_purchase",
+    )
+
+    started_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="When this subscription became ACTIVE."
+    )
+    expires_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Hard expiry. After this, the subscription is expired even "
+                  "if sales_remaining > 0."
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        # FIFO: oldest purchase consumed first
+        ordering = ["created_at"]
 
     def __str__(self):
-        return f"{self.supermarket.name} -> {self.package.name}"
+        return (
+            f"{self.supermarket.name} | {self.package.name} | "
+            f"{self.sales_remaining}/{self.sales_allocated} sales | {self.status}"
+        )
+
+    @property
+    def is_unlimited(self):
+        return self.package.daily_free_sales is None
+
+    def consume_sale(self):
+        """
+        Deduct one sale from this subscription.
+        Returns True if the subscription is now fully consumed so the caller
+        can promote the next queued one.
+        """
+        if self.is_unlimited:
+            return False  # unlimited — never exhausted
+
+        if self.sales_remaining > 0:
+            self.sales_remaining -= 1
+            self.save(update_fields=["sales_remaining"])
+
+        if self.sales_remaining == 0:
+            self.status = self.Status.EXPIRED
+            self.save(update_fields=["status"])
+            return True  # exhausted — promote next
+
+        return False
 
 
 class SalesSession(models.Model):
     """
-    Tracks a cashier's daily sales quota usage.
-    Once `sales_count` reaches the package's daily_free_sales limit,
-    the session is locked and a Payment is required to unlock a new one.
+    Tracks a cashier's current working session.
+    Quota is now managed by the Subscription stack — the session is a
+    lightweight audit/display record only.
     """
 
     class Status(models.TextChoices):
@@ -140,50 +244,55 @@ class SalesSession(models.Model):
         EXPIRED = "EXPIRED", "Expired"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    supermarket = models.ForeignKey(Supermarket, on_delete=models.CASCADE, related_name="sessions")
-    cashier = models.ForeignKey(User, on_delete=models.CASCADE, related_name="sessions")
-    package = models.ForeignKey(Package, on_delete=models.PROTECT, related_name="sessions")
+    supermarket = models.ForeignKey(
+        Supermarket, on_delete=models.CASCADE, related_name="sessions"
+    )
+    cashier = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="sessions"
+    )
+    package = models.ForeignKey(
+        Package, on_delete=models.PROTECT, related_name="sessions"
+    )
 
     sales_count = models.PositiveIntegerField(default=0)
     sales_limit = models.PositiveIntegerField(
         null=True,
         blank=True,
-        help_text="Snapshot of package limit at session start. Null means unlimited.",
+        help_text="Kept for display/history. Quota gate is now the Subscription stack.",
     )
 
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.ACTIVE
+    )
 
     started_at = models.DateTimeField(auto_now_add=True)
     locked_at = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField(null=True, blank=True)
     unlocked_by_payment = models.ForeignKey(
-        "Payment", on_delete=models.SET_NULL, null=True, blank=True, related_name="unlocked_sessions"
+        "Payment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="unlocked_sessions",
     )
 
     class Meta:
         ordering = ["-started_at"]
 
     def __str__(self):
-        return f"Session({self.cashier.username}) {self.sales_count}/{self.sales_limit} [{self.status}]"
-
-    @property
-    def is_quota_exhausted(self):
-        if self.sales_limit is None:
-            return False  # unlimited package — never locks
-        return self.sales_count >= self.sales_limit
+        return (
+            f"Session({self.cashier.username}) "
+            f"{self.sales_count}/{self.sales_limit} [{self.status}]"
+        )
 
     def increment_sale(self):
         self.sales_count += 1
-        if self.is_quota_exhausted:
-            self.status = self.Status.LOCKED
-            self.locked_at = timezone.now()
-        self.save(update_fields=["sales_count", "status", "locked_at"])
+        self.save(update_fields=["sales_count"])
 
 
 class Payment(models.Model):
     """
-    M-Pesa STK Push payment record used to unlock a new SalesSession,
-    pay for a subscription, settle a POS sale, or other purposes.
+    M-Pesa STK Push payment record.
     """
 
     class Purpose(models.TextChoices):
@@ -199,15 +308,22 @@ class Payment(models.Model):
         CANCELLED = "CANCELLED", "Cancelled"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    supermarket = models.ForeignKey(Supermarket, on_delete=models.CASCADE, related_name="payments")
-    initiated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="payments")
+    supermarket = models.ForeignKey(
+        Supermarket, on_delete=models.CASCADE, related_name="payments"
+    )
+    initiated_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, related_name="payments"
+    )
 
-    purpose = models.CharField(max_length=20, choices=Purpose.choices, default=Purpose.SESSION_UNLOCK)
+    purpose = models.CharField(
+        max_length=20, choices=Purpose.choices, default=Purpose.SESSION_UNLOCK
+    )
     amount = models.DecimalField(max_digits=10, decimal_places=2)
-    phone_number = models.CharField(max_length=15, help_text="Payer MSISDN, format 2547XXXXXXXX")
+    phone_number = models.CharField(
+        max_length=15, help_text="Payer MSISDN, format 2547XXXXXXXX"
+    )
 
-    # Which package tier this payment is unlocking (SESSION_UNLOCK only).
-    # Null means "use whatever the supermarket's current subscription package is".
+    # Which package tier this payment is purchasing.
     package = models.ForeignKey(
         Package,
         on_delete=models.SET_NULL,
@@ -223,8 +339,12 @@ class Payment(models.Model):
     result_code = models.CharField(max_length=10, blank=True)
     result_desc = models.CharField(max_length=255, blank=True)
 
-    reference_code = models.CharField(max_length=20, unique=True, default=generate_reference_code)
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    reference_code = models.CharField(
+        max_length=20, unique=True, default=generate_reference_code
+    )
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.PENDING
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -241,7 +361,9 @@ class Payment(models.Model):
 # ---------------------------------------------------------------------------
 
 class Category(models.Model):
-    supermarket = models.ForeignKey(Supermarket, on_delete=models.CASCADE, related_name="categories")
+    supermarket = models.ForeignKey(
+        Supermarket, on_delete=models.CASCADE, related_name="categories"
+    )
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -255,7 +377,9 @@ class Category(models.Model):
 
 
 class Supplier(models.Model):
-    supermarket = models.ForeignKey(Supermarket, on_delete=models.CASCADE, related_name="suppliers")
+    supermarket = models.ForeignKey(
+        Supermarket, on_delete=models.CASCADE, related_name="suppliers"
+    )
     name = models.CharField(max_length=150)
     phone_number = models.CharField(max_length=20, blank=True)
     email = models.EmailField(blank=True)
@@ -270,21 +394,38 @@ class Product(models.Model):
     """Inventory item, scannable via barcode at the POS."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    supermarket = models.ForeignKey(Supermarket, on_delete=models.CASCADE, related_name="products")
-    category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, related_name="products")
-    supplier = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, blank=True, related_name="products")
+    supermarket = models.ForeignKey(
+        Supermarket, on_delete=models.CASCADE, related_name="products"
+    )
+    category = models.ForeignKey(
+        Category, on_delete=models.SET_NULL, null=True, related_name="products"
+    )
+    supplier = models.ForeignKey(
+        Supplier, on_delete=models.SET_NULL, null=True, blank=True, related_name="products"
+    )
 
     name = models.CharField(max_length=150)
-    barcode = models.CharField(max_length=64, db_index=True, help_text="Scanned barcode value (EAN/UPC/Code128)")
+    barcode = models.CharField(
+        max_length=64, db_index=True,
+        help_text="Scanned barcode value (EAN/UPC/Code128)"
+    )
     sku = models.CharField(max_length=50, blank=True)
     image = models.ImageField(upload_to="products/", blank=True, null=True)
 
-    unit = models.CharField(max_length=30, default="pcs", help_text="e.g. pcs, kg, litre, pack")
-    cost_price = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
+    unit = models.CharField(
+        max_length=30, default="pcs", help_text="e.g. pcs, kg, litre, pack"
+    )
+    cost_price = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("0.00")
+    )
     selling_price = models.DecimalField(max_digits=10, decimal_places=2)
 
-    quantity_in_stock = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.00"))
-    reorder_level = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("5.00"))
+    quantity_in_stock = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("0.00")
+    )
+    reorder_level = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("5.00")
+    )
 
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -303,7 +444,7 @@ class Product(models.Model):
 
 
 class StockMovement(models.Model):
-    """Audit trail for every stock change (restock, sale deduction, adjustment)."""
+    """Audit trail for every stock change."""
 
     class MovementType(models.TextChoices):
         RESTOCK = "RESTOCK", "Restock"
@@ -312,11 +453,18 @@ class StockMovement(models.Model):
         RETURN = "RETURN", "Customer Return"
         DAMAGE = "DAMAGE", "Damage / Loss"
 
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="stock_movements")
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name="stock_movements"
+    )
     movement_type = models.CharField(max_length=12, choices=MovementType.choices)
-    quantity = models.DecimalField(max_digits=10, decimal_places=2, help_text="Positive for additions, negative for deductions")
+    quantity = models.DecimalField(
+        max_digits=10, decimal_places=2,
+        help_text="Positive for additions, negative for deductions"
+    )
     note = models.CharField(max_length=255, blank=True)
-    performed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="stock_movements")
+    performed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, related_name="stock_movements"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -345,28 +493,55 @@ class Sale(models.Model):
         REFUNDED = "REFUNDED", "Refunded"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    supermarket = models.ForeignKey(Supermarket, on_delete=models.CASCADE, related_name="sales")
-    cashier = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="sales")
-    session = models.ForeignKey(SalesSession, on_delete=models.SET_NULL, null=True, blank=True, related_name="sales")
+    supermarket = models.ForeignKey(
+        Supermarket, on_delete=models.CASCADE, related_name="sales"
+    )
+    cashier = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, related_name="sales"
+    )
+    session = models.ForeignKey(
+        SalesSession, on_delete=models.SET_NULL, null=True, blank=True, related_name="sales"
+    )
 
-    receipt_number = models.CharField(max_length=30, unique=True, default=generate_receipt_number)
+    receipt_number = models.CharField(
+        max_length=30, unique=True, default=generate_receipt_number
+    )
     qr_code = models.ImageField(upload_to="receipts/qr/", blank=True, null=True)
 
-    subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-    discount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-    tax = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-    total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-
-    payment_method = models.CharField(max_length=10, choices=PaymentMethod.choices, default=PaymentMethod.CASH)
-    mpesa_payment = models.ForeignKey(
-        Payment, on_delete=models.SET_NULL, null=True, blank=True, related_name="sale_payments"
+    subtotal = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
     )
-    amount_tendered = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    change_due = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    discount = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
+    tax = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
+    total = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
 
-    status = models.CharField(max_length=10, choices=Status.choices, default=Status.COMPLETED)
+    payment_method = models.CharField(
+        max_length=10, choices=PaymentMethod.choices, default=PaymentMethod.CASH
+    )
+    mpesa_payment = models.ForeignKey(
+        Payment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sale_payments",
+    )
+    amount_tendered = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    change_due = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
+
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.COMPLETED
+    )
     customer_phone = models.CharField(max_length=20, blank=True)
-
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -376,7 +551,9 @@ class Sale(models.Model):
         return f"{self.receipt_number} - KES {self.total}"
 
     def recalculate_totals(self):
-        agg = self.items.aggregate(total=models.Sum(models.F("quantity") * models.F("unit_price")))
+        agg = self.items.aggregate(
+            total=models.Sum(models.F("quantity") * models.F("unit_price"))
+        )
         self.subtotal = agg["total"] or Decimal("0.00")
         self.total = self.subtotal - self.discount + self.tax
         self.save(update_fields=["subtotal", "total"])
@@ -386,16 +563,27 @@ class SaleItem(models.Model):
     """Line item within a Sale, captured from a barcode scan."""
 
     sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name="items")
-    product = models.ForeignKey(Product, on_delete=models.SET_NULL, null=True, related_name="sale_items")
+    product = models.ForeignKey(
+        Product, on_delete=models.SET_NULL, null=True, related_name="sale_items"
+    )
 
-    product_name = models.CharField(max_length=150, help_text="Snapshot in case product is later edited/deleted")
+    product_name = models.CharField(
+        max_length=150,
+        help_text="Snapshot in case product is later edited/deleted"
+    )
     barcode = models.CharField(max_length=64, blank=True)
-    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("1.00"))
+    quantity = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("1.00")
+    )
     unit_price = models.DecimalField(max_digits=10, decimal_places=2)
-    line_total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    line_total = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
 
     def save(self, *args, **kwargs):
-        self.line_total = (self.quantity or Decimal("0")) * (self.unit_price or Decimal("0"))
+        self.line_total = (
+            (self.quantity or Decimal("0")) * (self.unit_price or Decimal("0"))
+        )
         if self.product and not self.product_name:
             self.product_name = self.product.name
         super().save(*args, **kwargs)
