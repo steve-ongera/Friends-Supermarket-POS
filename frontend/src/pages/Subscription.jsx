@@ -1,18 +1,45 @@
 import React, { useEffect, useState } from "react";
-import { getSubscription, getPackages } from "../services/api";
+import {
+  getSubscription,
+  getPackages,
+  updateSupermarket,
+  initiateSTKPush,
+  getPaymentStatus,
+} from "../services/api";
+import api from "../services/api";
+
+// PATCH /subscription/ isn't exported from services/api.js yet — add it
+// inline here using the shared `api` axios instance instead of duplicating
+// the whole file. (Move this into api.js as `updateSubscription` if you
+// prefer keeping all endpoints centralized there.)
+const updateSubscription = (data) => api.patch("/subscription/", data);
+
+const POLL_INTERVAL_MS = 3000;
+const MAX_POLL_ATTEMPTS = 40; // ~2 minutes
 
 export default function Subscription() {
   const [subscription, setSubscription] = useState(null);
   const [packages, setPackages] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // --- Upgrade flow state ---
+  const [upgradingPackageId, setUpgradingPackageId] = useState(null); // which card is mid-flow
+  const [upgradeStatus, setUpgradeStatus] = useState(null); // null | "sending" | "pending" | "success" | "failed"
+  const [upgradeError, setUpgradeError] = useState("");
+  const [phone, setPhone] = useState("");
+  const [pendingPayment, setPendingPayment] = useState(null);
+
   useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = () => {
     setLoading(true);
-    Promise.all([
+    return Promise.all([
       getSubscription().then((res) => setSubscription(res.data)),
       getPackages().then((res) => setPackages(res.data.results || res.data)),
     ]).finally(() => setLoading(false));
-  }, []);
+  };
 
   // Calculate days remaining
   const getDaysRemaining = () => {
@@ -41,6 +68,100 @@ export default function Subscription() {
       case "TRIAL": return "warning";
       default: return "neutral";
     }
+  };
+
+  // --- Upgrade flow ---
+
+  const startUpgrade = (pkg) => {
+    setUpgradingPackageId(pkg.id);
+    setUpgradeStatus(null);
+    setUpgradeError("");
+    setPhone("");
+    setPendingPayment(null);
+  };
+
+  const cancelUpgrade = () => {
+    setUpgradingPackageId(null);
+    setUpgradeStatus(null);
+    setUpgradeError("");
+    setPendingPayment(null);
+  };
+
+  const handleSendUpgradePush = async (pkg) => {
+    const phoneDigits = phone.replace(/\D/g, "");
+    if (!phoneDigits) {
+      setUpgradeError("Enter the phone number to pay from.");
+      return;
+    }
+
+    setUpgradeStatus("sending");
+    setUpgradeError("");
+
+    try {
+      const res = await initiateSTKPush({
+        phone_number: phone,
+        amount: pkg.unlock_price,
+        purpose: "SUBSCRIPTION",
+      });
+      setPendingPayment(res.data.payment);
+      setUpgradeStatus("pending");
+      pollUpgradePayment(res.data.payment.reference_code, pkg);
+    } catch (err) {
+      setUpgradeStatus("failed");
+      setUpgradeError(
+        err.response?.data?.detail || "Could not send the M-Pesa prompt. Check the number and try again."
+      );
+    }
+  };
+
+  const pollUpgradePayment = (referenceCode, pkg, attempt = 0) => {
+    setTimeout(async () => {
+      try {
+        const res = await getPaymentStatus(referenceCode);
+        const payment = res.data;
+        setPendingPayment(payment);
+
+        if (payment.status === "SUCCESS") {
+          // Payment confirmed — now actually activate the new package.
+          try {
+            await updateSubscription({ package: pkg.id, is_active: true });
+            setUpgradeStatus("success");
+            await loadData();
+            setTimeout(() => {
+              setUpgradingPackageId(null);
+              setUpgradeStatus(null);
+            }, 1500);
+          } catch {
+            setUpgradeStatus("failed");
+            setUpgradeError(
+              "Payment succeeded but activating the new package failed. Please contact support — you will not be charged again."
+            );
+          }
+          return;
+        }
+
+        if (payment.status === "FAILED" || payment.status === "CANCELLED") {
+          setUpgradeStatus("failed");
+          setUpgradeError(payment.result_desc || "Payment failed or was cancelled.");
+          return;
+        }
+
+        if (attempt + 1 >= MAX_POLL_ATTEMPTS) {
+          setUpgradeError(
+            "Still waiting on confirmation. If you completed the payment, give it a moment and check again."
+          );
+          return;
+        }
+
+        pollUpgradePayment(referenceCode, pkg, attempt + 1);
+      } catch {
+        if (attempt + 1 >= MAX_POLL_ATTEMPTS) {
+          setUpgradeError("Lost connection while checking payment status.");
+        } else {
+          pollUpgradePayment(referenceCode, pkg, attempt + 1);
+        }
+      }
+    }, POLL_INTERVAL_MS);
   };
 
   return (
@@ -91,9 +212,9 @@ export default function Subscription() {
                   <i className="bi bi-check-circle" style={{ color: "var(--color-success)" }}></i>
                   Current Subscription
                 </h3>
-                <span className={`pill ${getStatusPill(subscription.status)}`}>
-                  <i className={`bi ${subscription.status === "ACTIVE" ? "bi-check-circle" : "bi-exclamation-circle"}`}></i>
-                  {subscription.status || "ACTIVE"}
+                <span className={`pill ${getStatusPill(subscription.is_active ? "ACTIVE" : "EXPIRED")}`}>
+                  <i className={`bi ${subscription.is_active ? "bi-check-circle" : "bi-exclamation-circle"}`}></i>
+                  {subscription.is_active ? "ACTIVE" : "INACTIVE"}
                 </span>
               </div>
 
@@ -122,7 +243,9 @@ export default function Subscription() {
                     <i className="bi bi-arrow-up-circle"></i> Free Sales / Day
                   </div>
                   <div style={{ fontSize: "1.1rem", fontWeight: "700", color: "var(--color-primary)" }}>
-                    {subscription.package_detail?.daily_free_sales || "—"}
+                    {subscription.package_detail?.is_unlimited
+                      ? "Unlimited"
+                      : subscription.package_detail?.daily_free_sales ?? "—"}
                   </div>
                 </div>
 
@@ -244,6 +367,8 @@ export default function Subscription() {
               ) : (
                 packages.map((p) => {
                   const isCurrent = subscription?.package_detail?.id === p.id;
+                  const isUpgrading = upgradingPackageId === p.id;
+
                   return (
                     <div className="card" key={p.id} style={{ 
                       border: isCurrent ? `2px solid var(--color-primary)` : "1px solid var(--color-border-light)",
@@ -278,7 +403,7 @@ export default function Subscription() {
                           {p.name}
                         </h4>
                         <span className="pill info">
-                          {p.daily_free_sales} free/day
+                          {p.is_unlimited ? "Unlimited" : `${p.daily_free_sales} free/day`}
                         </span>
                       </div>
                       <p style={{ 
@@ -311,25 +436,107 @@ export default function Subscription() {
                             {formatCurrency(p.unlock_price)}
                           </div>
                         </div>
-                        <button 
-                          className={`btn ${isCurrent ? "btn-secondary" : "btn-primary"}`}
-                          disabled={isCurrent}
-                          style={{ 
-                            fontSize: "0.85rem",
-                            padding: "8px 16px"
+                        {!isUpgrading && (
+                          <button 
+                            className={`btn ${isCurrent ? "btn-secondary" : "btn-primary"}`}
+                            disabled={isCurrent}
+                            onClick={() => startUpgrade(p)}
+                            style={{ 
+                              fontSize: "0.85rem",
+                              padding: "8px 16px"
+                            }}
+                          >
+                            {isCurrent ? (
+                              <>
+                                <i className="bi bi-check-circle"></i> Active
+                              </>
+                            ) : (
+                              <>
+                                <i className="bi bi-arrow-right-circle"></i> Subscribe
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Inline M-Pesa upgrade flow for this card */}
+                      {isUpgrading && (
+                        <div
+                          style={{
+                            marginTop: "14px",
+                            paddingTop: "14px",
+                            borderTop: "1px solid var(--color-border-light)",
                           }}
                         >
-                          {isCurrent ? (
-                            <>
-                              <i className="bi bi-check-circle"></i> Active
-                            </>
+                          {upgradeStatus === "success" ? (
+                            <div style={{ textAlign: "center", color: "var(--color-success)", fontWeight: 600, fontSize: "0.88rem" }}>
+                              <i className="bi bi-check-circle-fill" style={{ marginRight: 6 }}></i>
+                              Subscription activated!
+                            </div>
+                          ) : upgradeStatus === "pending" ? (
+                            <div>
+                              <p style={{ fontSize: "0.82rem", color: "var(--color-text-muted)", marginBottom: "10px" }}>
+                                <i className="bi bi-phone-vibrate"></i> Waiting for payment confirmation on {phone}...
+                              </p>
+                              {upgradeError && (
+                                <p style={{ color: "var(--color-danger)", fontSize: "0.78rem", marginBottom: "8px" }}>
+                                  {upgradeError}
+                                </p>
+                              )}
+                              <button
+                                type="button"
+                                onClick={cancelUpgrade}
+                                className="btn btn-secondary"
+                                style={{ width: "100%", fontSize: "0.8rem", padding: "7px" }}
+                              >
+                                Cancel
+                              </button>
+                            </div>
                           ) : (
-                            <>
-                              <i className="bi bi-arrow-right-circle"></i> Subscribe
-                            </>
+                            <div>
+                              <input
+                                type="tel"
+                                placeholder="2547XXXXXXXX"
+                                value={phone}
+                                onChange={(e) => setPhone(e.target.value)}
+                                disabled={upgradeStatus === "sending"}
+                                style={{
+                                  width: "100%",
+                                  padding: "8px 10px",
+                                  borderRadius: "6px",
+                                  border: "1px solid var(--color-border)",
+                                  fontSize: "0.85rem",
+                                  marginBottom: "8px",
+                                }}
+                              />
+                              {upgradeError && (
+                                <p style={{ color: "var(--color-danger)", fontSize: "0.78rem", marginBottom: "8px" }}>
+                                  {upgradeError}
+                                </p>
+                              )}
+                              <div style={{ display: "flex", gap: "8px" }}>
+                                <button
+                                  type="button"
+                                  onClick={cancelUpgrade}
+                                  className="btn btn-secondary"
+                                  style={{ flex: 1, fontSize: "0.8rem", padding: "7px" }}
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSendUpgradePush(p)}
+                                  disabled={upgradeStatus === "sending" || !phone}
+                                  className="btn btn-primary"
+                                  style={{ flex: 1, fontSize: "0.8rem", padding: "7px" }}
+                                >
+                                  {upgradeStatus === "sending" ? "Sending..." : "Pay & Activate"}
+                                </button>
+                              </div>
+                            </div>
                           )}
-                        </button>
-                      </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })
@@ -364,9 +571,6 @@ export default function Subscription() {
                     Upgrade your package or unlock additional sales when you reach your daily limit.
                   </div>
                 </div>
-                <button className="btn btn-accent" style={{ marginLeft: "auto" }}>
-                  <i className="bi bi-arrow-up-circle"></i> Upgrade Now
-                </button>
               </div>
             </div>
           )}
