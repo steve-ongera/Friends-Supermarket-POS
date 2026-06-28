@@ -16,6 +16,17 @@ DARAJA_BASE_URL = (
     else "https://api.safaricom.co.ke"
 )
 
+# Safaricom's sandbox sits behind an Incapsula WAF that occasionally challenges
+# requests lacking a normal browser User-Agent (returns a 403 HTML challenge
+# page instead of a JSON error). Sending a standard UA avoids that.
+_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+}
+
 
 class MpesaError(Exception):
     """Raised when Daraja rejects a request. Carries the parsed error body."""
@@ -57,7 +68,10 @@ def normalize_phone_number(raw_phone):
 def get_access_token():
     url = f"{DARAJA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials"
     response = requests.get(
-        url, auth=(settings.MPESA_CONSUMER_KEY, settings.MPESA_CONSUMER_SECRET), timeout=30
+        url,
+        auth=(settings.MPESA_CONSUMER_KEY, settings.MPESA_CONSUMER_SECRET),
+        headers=_REQUEST_HEADERS,
+        timeout=30,
     )
     if not response.ok:
         raise MpesaError(
@@ -80,7 +94,18 @@ def _safe_json(response):
     try:
         return response.json()
     except ValueError:
-        return {"raw_text": response.text}
+        text = response.text
+        if "Incapsula" in text or "<html" in text.lower():
+            return {
+                "raw_text": text,
+                "note": (
+                    "This looks like a WAF/bot-protection challenge page (e.g. "
+                    "Incapsula) from Safaricom's edge, not a real Daraja JSON "
+                    "error. Usually fixed by adding a normal browser User-Agent "
+                    "header or waiting a few minutes before retrying."
+                ),
+            }
+        return {"raw_text": text}
 
 
 def initiate_stk_push(phone_number, amount, account_reference, transaction_desc):
@@ -98,7 +123,7 @@ def initiate_stk_push(phone_number, amount, account_reference, transaction_desc)
     password, timestamp = _generate_password_and_timestamp()
 
     url = f"{DARAJA_BASE_URL}/mpesa/stkpush/v1/processrequest"
-    headers = {"Authorization": f"Bearer {access_token}"}
+    headers = {**_REQUEST_HEADERS, "Authorization": f"Bearer {access_token}"}
     payload = {
         "BusinessShortCode": settings.MPESA_SHORTCODE,
         "Password": password,

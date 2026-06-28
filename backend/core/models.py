@@ -172,12 +172,13 @@ class SalesSession(models.Model):
 class Payment(models.Model):
     """
     M-Pesa STK Push payment record used to unlock a new SalesSession,
-    or for general subscription/package payments.
+    pay for a subscription, settle a POS sale, or other purposes.
     """
 
     class Purpose(models.TextChoices):
         SESSION_UNLOCK = "SESSION_UNLOCK", "Unlock Sales Session"
         SUBSCRIPTION = "SUBSCRIPTION", "Subscription Payment"
+        SALE = "SALE", "POS Sale Payment"
         OTHER = "OTHER", "Other"
 
     class Status(models.TextChoices):
