@@ -18,28 +18,67 @@ const NAV_ITEMS = [
 export default function Sidebar() {
   const { user } = useAuth();
 
+  // Group navigation items for better organization
+  const mainItems = NAV_ITEMS.filter(item => 
+    !item.roles || item.roles.includes(user?.role)
+  ).slice(0, 4);
+  
+  const managementItems = NAV_ITEMS.filter(item => 
+    !item.roles || item.roles.includes(user?.role)
+  ).slice(4);
+
   return (
     <aside className="sidebar" id="app-sidebar">
       <div className="sidebar-brand">
-        <i className="bi bi-shop"></i>
-        <span>Friends POS</span>
+        <div className="brand-icon">
+          <i className="bi bi-shop"></i>
+        </div>
+        <div className="brand-text">
+          <span>Friends POS</span>
+          <small>Supermarket Management</small>
+        </div>
       </div>
 
       <nav className="sidebar-nav">
-        {NAV_ITEMS.filter((item) => !item.roles || item.roles.includes(user?.role)).map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
-          >
-            <i className={`bi ${item.icon}`}></i>
-            <span>{item.label}</span>
-          </NavLink>
-        ))}
+        {mainItems.length > 0 && (
+          <>
+            <div className="nav-label">Main</div>
+            {mainItems.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
+              >
+                <i className={`bi ${item.icon}`}></i>
+                <span>{item.label}</span>
+              </NavLink>
+            ))}
+          </>
+        )}
+
+        {managementItems.length > 0 && (
+          <>
+            <div className="nav-label">Management</div>
+            {managementItems.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
+              >
+                <i className={`bi ${item.icon}`}></i>
+                <span>{item.label}</span>
+              </NavLink>
+            ))}
+          </>
+        )}
       </nav>
 
       <div className="sidebar-footer">
-        &copy; {new Date().getFullYear()} Friends Supermarket POS
+        <span className="version">
+          <span className="status-dot"></span>
+          v2.0.0
+        </span>
+        <span>&copy; {new Date().getFullYear()}</span>
       </div>
     </aside>
   );
