@@ -67,12 +67,19 @@ export default function Dashboard() {
             <i className="bi bi-arrow-up"></i> +12%
           </div>
         </div>
-        <div className="kpi-card">
+        <div className="kpi-card" style={{ minWidth: "180px" }}>
           <div className="kpi-label">
             <i className="bi bi-cash-coin" style={{ marginRight: "4px" }}></i> 
             Revenue Today
           </div>
-          <div className="kpi-value">{formatCurrency(summary?.revenue_today)}</div>
+          <div className="kpi-value" style={{ 
+            fontSize: "1.5rem",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis"
+          }}>
+            {formatCurrency(summary?.revenue_today)}
+          </div>
           <div className="kpi-trend up">
             <i className="bi bi-arrow-up"></i> +8%
           </div>
