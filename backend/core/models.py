@@ -98,7 +98,12 @@ class Package(models.Model):
 
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
-    daily_free_sales = models.PositiveIntegerField(default=20, help_text="Sales allowed before lock")
+    daily_free_sales = models.PositiveIntegerField(
+        default=20,
+        null=True,
+        blank=True,
+        help_text="Sales allowed before lock. Leave blank for unlimited (no lock ever applied).",
+    )
     unlock_price = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("100.00"))
     session_duration_hours = models.PositiveIntegerField(
         default=24, help_text="Validity of an unlocked session, in hours"
@@ -140,7 +145,11 @@ class SalesSession(models.Model):
     package = models.ForeignKey(Package, on_delete=models.PROTECT, related_name="sessions")
 
     sales_count = models.PositiveIntegerField(default=0)
-    sales_limit = models.PositiveIntegerField(help_text="Snapshot of package limit at session start")
+    sales_limit = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Snapshot of package limit at session start. Null means unlimited.",
+    )
 
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
 
@@ -159,6 +168,8 @@ class SalesSession(models.Model):
 
     @property
     def is_quota_exhausted(self):
+        if self.sales_limit is None:
+            return False  # unlimited package — never locks
         return self.sales_count >= self.sales_limit
 
     def increment_sale(self):
