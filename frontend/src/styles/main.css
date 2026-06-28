@@ -363,6 +363,10 @@ button {
   .pos-layout {
     grid-template-columns: 1fr;
   }
+
+  .dashboard-chart-row {
+    grid-template-columns: 1fr !important;
+  }
 }
 
 @media (max-width: 768px) {
