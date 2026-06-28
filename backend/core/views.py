@@ -49,7 +49,7 @@ from .serializers import (
     SaleSerializer,
     SaleCreateSerializer,
 )
-from .services.mpesa import initiate_stk_push
+from .services.mpesa import initiate_stk_push, MpesaError
 from .services.qrcode_service import generate_receipt_qr
 from .services.billing import (
     get_or_create_active_session,
@@ -181,27 +181,28 @@ class SalesSessionListView(SameSupermarketMixin, generics.ListAPIView):
 # M-Pesa Payments (STK Push for session unlock / customer checkout)
 # ---------------------------------------------------------------------------
 
+
 class InitiateSTKPushView(APIView):
     """
     Triggers an M-Pesa STK Push.
     purpose=SESSION_UNLOCK -> uses the supermarket's package.unlock_price by default.
     """
-
+ 
     permission_classes = [IsAuthenticated]
-
+ 
     def post(self, request):
         serializer = STKPushRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-
+ 
         supermarket = request.user.supermarket
         amount = data.get("amount")
         purpose = data["purpose"]
-
+ 
         if purpose == Payment.Purpose.SESSION_UNLOCK and not amount:
             subscription = get_object_or_404(Subscription, supermarket=supermarket)
             amount = subscription.package.unlock_price
-
+ 
         payment = Payment.objects.create(
             supermarket=supermarket,
             initiated_by=request.user,
@@ -210,18 +211,27 @@ class InitiateSTKPushView(APIView):
             phone_number=data["phone_number"],
             status=Payment.Status.PENDING,
         )
-
-        stk_response = initiate_stk_push(
-            phone_number=data["phone_number"],
-            amount=amount,
-            account_reference=payment.reference_code,
-            transaction_desc=f"{supermarket.name} - {purpose}",
-        )
-
+ 
+        try:
+            stk_response = initiate_stk_push(
+                phone_number=data["phone_number"],
+                amount=amount,
+                account_reference=payment.reference_code,
+                transaction_desc=f"{supermarket.name} - {purpose}",
+            )
+        except MpesaError as exc:
+            payment.status = Payment.Status.FAILED
+            payment.result_desc = str(exc)
+            payment.save(update_fields=["status", "result_desc"])
+            return Response(
+                {"detail": str(exc), "daraja_error": exc.daraja_body},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+ 
         payment.merchant_request_id = stk_response.get("MerchantRequestID", "")
         payment.checkout_request_id = stk_response.get("CheckoutRequestID", "")
         payment.save(update_fields=["merchant_request_id", "checkout_request_id"])
-
+ 
         return Response(
             {
                 "payment": PaymentSerializer(payment).data,
@@ -229,7 +239,6 @@ class InitiateSTKPushView(APIView):
             },
             status=status.HTTP_202_ACCEPTED,
         )
-
 
 class PaymentStatusView(generics.RetrieveAPIView):
     """Poll endpoint — frontend polls this while waiting for the STK callback."""
