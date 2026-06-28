@@ -43,10 +43,19 @@ def unlock_new_session(payment):
     """
     Called from the M-Pesa callback once a SESSION_UNLOCK payment succeeds.
     Creates a fresh ACTIVE session for the cashier who initiated the payment.
+    Uses the package stored on the payment (i.e. the one the user selected
+    in the modal and actually paid for). Falls back to the supermarket's
+    current subscription package if no package was specified.
     """
     user = payment.initiated_by
-    subscription = Subscription.objects.select_related("package").get(supermarket=payment.supermarket)
-    package = subscription.package
+
+    if payment.package is not None:
+        package = payment.package
+    else:
+        subscription = Subscription.objects.select_related("package").get(
+            supermarket=payment.supermarket
+        )
+        package = subscription.package
 
     new_session = SalesSession.objects.create(
         supermarket=payment.supermarket,

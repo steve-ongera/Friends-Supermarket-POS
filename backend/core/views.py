@@ -185,16 +185,20 @@ class SalesSessionListView(SameSupermarketMixin, generics.ListAPIView):
 class InitiateSTKPushView(APIView):
     """
     Triggers an M-Pesa STK Push.
-    purpose=SESSION_UNLOCK -> uses the supermarket's package.unlock_price by default.
+    purpose=SESSION_UNLOCK -> uses the chosen package's unlock_price if a
+    package_id is provided, otherwise falls back to the supermarket's current
+    subscription package price.
+    The chosen package is stored on the Payment so unlock_new_session can
+    later create the session with the correct sales limit.
     """
- 
+
     permission_classes = [IsAuthenticated]
- 
+
     def post(self, request):
         serializer = STKPushRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
- 
+
         supermarket = request.user.supermarket
         amount = data.get("amount")
         purpose = data["purpose"]
@@ -205,8 +209,8 @@ class InitiateSTKPushView(APIView):
                 amount = chosen_package.unlock_price
             else:
                 subscription = get_object_or_404(Subscription, supermarket=supermarket)
-                amount = subscription.package.unlock_price 
- 
+                amount = subscription.package.unlock_price
+
         payment = Payment.objects.create(
             supermarket=supermarket,
             initiated_by=request.user,
@@ -214,8 +218,11 @@ class InitiateSTKPushView(APIView):
             amount=amount,
             phone_number=data["phone_number"],
             status=Payment.Status.PENDING,
+            # Store whichever package the user selected so that
+            # unlock_new_session can snapshot the correct sales limit.
+            package=chosen_package,
         )
- 
+
         try:
             stk_response = initiate_stk_push(
                 phone_number=data["phone_number"],
@@ -231,11 +238,11 @@ class InitiateSTKPushView(APIView):
                 {"detail": str(exc), "daraja_error": exc.daraja_body},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
- 
+
         payment.merchant_request_id = stk_response.get("MerchantRequestID", "")
         payment.checkout_request_id = stk_response.get("CheckoutRequestID", "")
         payment.save(update_fields=["merchant_request_id", "checkout_request_id"])
- 
+
         return Response(
             {
                 "payment": PaymentSerializer(payment).data,

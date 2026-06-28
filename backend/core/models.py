@@ -206,6 +206,16 @@ class Payment(models.Model):
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     phone_number = models.CharField(max_length=15, help_text="Payer MSISDN, format 2547XXXXXXXX")
 
+    # Which package tier this payment is unlocking (SESSION_UNLOCK only).
+    # Null means "use whatever the supermarket's current subscription package is".
+    package = models.ForeignKey(
+        Package,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="payments",
+    )
+
     # Daraja / STK Push fields
     merchant_request_id = models.CharField(max_length=100, blank=True)
     checkout_request_id = models.CharField(max_length=100, blank=True, db_index=True)
