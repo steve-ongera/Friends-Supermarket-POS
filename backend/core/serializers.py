@@ -199,12 +199,14 @@ class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
         fields = ["id", "supermarket", "name", "description", "created_at"]
+        read_only_fields = ["id", "supermarket", "created_at"]
 
 
 class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
         model = Supplier
         fields = ["id", "supermarket", "name", "phone_number", "email", "address", "created_at"]
+        read_only_fields = ["id", "supermarket", "created_at"]
 
 
 class ProductSerializer(serializers.ModelSerializer):
@@ -220,7 +222,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "quantity_in_stock", "reorder_level", "is_low_stock", "is_active",
             "created_at", "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "supermarket", "created_at", "updated_at"]
 
 
 class ProductLookupSerializer(serializers.ModelSerializer):
