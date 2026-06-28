@@ -130,12 +130,17 @@ class SupermarketSerializer(serializers.ModelSerializer):
 # ---------------------------------------------------------------------------
 
 class PackageSerializer(serializers.ModelSerializer):
+    is_unlimited = serializers.SerializerMethodField()
+
     class Meta:
         model = Package
         fields = [
-            "id", "name", "description", "daily_free_sales",
+            "id", "name", "description", "daily_free_sales", "is_unlimited",
             "unlock_price", "session_duration_hours", "is_active", "created_at",
         ]
+
+    def get_is_unlimited(self, obj):
+        return obj.daily_free_sales is None
 
 
 class SubscriptionSerializer(serializers.ModelSerializer):
@@ -162,6 +167,8 @@ class SalesSessionSerializer(serializers.ModelSerializer):
         ]
 
     def get_remaining_sales(self, obj):
+        if obj.sales_limit is None:
+            return None  # unlimited package — no cap to report
         return max(obj.sales_limit - obj.sales_count, 0)
 
 
@@ -188,6 +195,15 @@ class STKPushRequestSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     purpose = serializers.ChoiceField(
         choices=Payment.Purpose.choices, default=Payment.Purpose.SESSION_UNLOCK
+    )
+    # Optional: lets the cashier/owner pick a different (e.g. higher) package
+    # tier at unlock time instead of always re-paying the current subscription's
+    # package. Only meaningful when purpose == SESSION_UNLOCK.
+    package_id = serializers.PrimaryKeyRelatedField(
+        queryset=Package.objects.filter(is_active=True),
+        source="package",
+        required=False,
+        allow_null=True,
     )
 
 
@@ -230,7 +246,7 @@ class ProductLookupSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Product
-        fields = ["id", "name", "barcode", "selling_price", "unit", "quantity_in_stock"]
+        fields = ["id", "name", "barcode", "selling_price", "unit", "quantity_in_stock", "image"]
 
 
 class StockMovementSerializer(serializers.ModelSerializer):
@@ -303,7 +319,18 @@ class SaleCreateSerializer(serializers.Serializer):
     amount_tendered = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
     customer_phone = serializers.CharField(required=False, allow_blank=True, max_length=20)
 
+    # M-Pesa linkage — optional, only present when payment_method == MPESA
+    payment_reference = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    force_confirmed = serializers.BooleanField(required=False, default=False)
+
     def validate_items(self, value):
         if not value:
             raise serializers.ValidationError("At least one item is required.")
         return value
+
+    def validate(self, attrs):
+        if attrs.get("payment_method") == Sale.PaymentMethod.MPESA and not attrs.get("payment_reference"):
+            raise serializers.ValidationError(
+                {"payment_reference": "Required when payment_method is MPESA."}
+            )
+        return attrs

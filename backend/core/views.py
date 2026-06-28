@@ -198,10 +198,14 @@ class InitiateSTKPushView(APIView):
         supermarket = request.user.supermarket
         amount = data.get("amount")
         purpose = data["purpose"]
- 
+        chosen_package = data.get("package")  # set only if package_id was sent
+
         if purpose == Payment.Purpose.SESSION_UNLOCK and not amount:
-            subscription = get_object_or_404(Subscription, supermarket=supermarket)
-            amount = subscription.package.unlock_price
+            if chosen_package:
+                amount = chosen_package.unlock_price
+            else:
+                subscription = get_object_or_404(Subscription, supermarket=supermarket)
+                amount = subscription.package.unlock_price 
  
         payment = Payment.objects.create(
             supermarket=supermarket,
