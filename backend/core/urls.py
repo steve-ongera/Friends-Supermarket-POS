@@ -51,6 +51,7 @@ urlpatterns = [
 
     # --- Dashboard ---
     path("dashboard/summary/", views.DashboardSummaryView.as_view(), name="dashboard-summary"),
+    path("dashboard/charts/", views.DashboardChartsView.as_view(), name="dashboard-charts"),
 
     # --- Router (ViewSets: staff, categories, suppliers, products, sales) ---
     *router.urls,
