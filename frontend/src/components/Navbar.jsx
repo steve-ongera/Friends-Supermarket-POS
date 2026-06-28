@@ -1,19 +1,78 @@
-import React, { useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import React, { useEffect, useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useSession } from "../context/SessionContext.jsx";
+
+// Navigation items for page title lookup
+const NAV_ITEMS = [
+  { to: "/", icon: "bi-speedometer2", label: "Dashboard", roles: null },
+  { to: "/pos", icon: "bi-cart4", label: "POS / Till", roles: null },
+  { to: "/sales", icon: "bi-receipt", label: "Sales", roles: null },
+  { to: "/products", icon: "bi-box-seam", label: "Products", roles: ["OWNER", "MANAGER"] },
+  { to: "/inventory", icon: "bi-clipboard-data", label: "Inventory", roles: ["OWNER", "MANAGER"] },
+  { to: "/categories", icon: "bi-tags", label: "Categories", roles: ["OWNER", "MANAGER"] },
+  { to: "/suppliers", icon: "bi-truck", label: "Suppliers", roles: ["OWNER", "MANAGER"] },
+  { to: "/staff", icon: "bi-people", label: "Staff", roles: ["OWNER", "MANAGER"] },
+  { to: "/subscription", icon: "bi-credit-card", label: "Subscription", roles: ["OWNER", "MANAGER"] },
+  { to: "/settings", icon: "bi-gear", label: "Settings", roles: ["OWNER", "MANAGER"] },
+];
 
 export default function Navbar() {
   const { user, logout } = useAuth();
   const { session, refreshSession } = useSession();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   useEffect(() => {
     refreshSession().catch(() => {});
   }, [refreshSession]);
 
+  // Check sidebar state on mount and when it changes
+  useEffect(() => {
+    const sidebar = document.getElementById("app-sidebar");
+    if (sidebar) {
+      const isOpen = sidebar.classList.contains("open");
+      setIsSidebarOpen(isOpen);
+    }
+
+    // Listen for sidebar state changes
+    const observer = new MutationObserver(() => {
+      const sidebar = document.getElementById("app-sidebar");
+      if (sidebar) {
+        setIsSidebarOpen(sidebar.classList.contains("open"));
+      }
+    });
+
+    if (sidebar) {
+      observer.observe(sidebar, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    return () => observer.disconnect();
+  }, []);
+
+  // Close sidebar when route changes (only on mobile)
+  useEffect(() => {
+    if (window.innerWidth <= 768) {
+      closeSidebar();
+    }
+  }, [location]);
+
   const toggleSidebar = () => {
-    document.getElementById("app-sidebar")?.classList.toggle("open");
+    const sidebar = document.getElementById("app-sidebar");
+    if (sidebar) {
+      sidebar.classList.toggle("open");
+      const isOpen = sidebar.classList.contains("open");
+      setIsSidebarOpen(isOpen);
+    }
+  };
+
+  const closeSidebar = () => {
+    const sidebar = document.getElementById("app-sidebar");
+    if (sidebar) {
+      sidebar.classList.remove("open");
+      setIsSidebarOpen(false);
+    }
   };
 
   const handleLogout = () => {
@@ -38,23 +97,35 @@ export default function Navbar() {
     return "U";
   };
 
+  // Get current page title from path
+  const getPageTitle = () => {
+    const path = location.pathname;
+    const item = NAV_ITEMS.find(item => item.to === path);
+    return item?.label || "Dashboard";
+  };
+
   return (
     <header className="navbar">
       <div className="navbar-left">
-        <button className="navbar-toggle" onClick={toggleSidebar}>
-          <i className="bi bi-list"></i>
+        <button 
+          className="navbar-toggle" 
+          onClick={toggleSidebar}
+          aria-label="Toggle sidebar"
+          title={isSidebarOpen ? "Close sidebar" : "Open sidebar"}
+        >
+          <i className={`bi ${isSidebarOpen ? "bi-x-lg" : "bi-list"}`}></i>
         </button>
 
         <div className="navbar-breadcrumb">
-          <span>Friends Supermarket</span>
-          <span style={{ color: "var(--color-text-muted)" }}> / </span>
-          <span className="current">Dashboard</span>
+          <span className="brand-name">Friends Supermarket</span>
+          <span className="separator"> / </span>
+          <span className="current">{getPageTitle()}</span>
         </div>
 
         {session && (
           <span className={`navbar-session-pill${isLocked ? " locked" : ""}`}>
             <i className={`bi ${isLocked ? "bi-lock-fill" : "bi-unlock-fill"}`}></i>
-            <span>{isLocked ? "Session Locked" : `${remaining} sales left`}</span>
+            <span className="pill-text">{isLocked ? "Session Locked" : `${remaining} sales left`}</span>
           </span>
         )}
       </div>
@@ -80,9 +151,9 @@ export default function Navbar() {
           </div>
         </div>
 
-        <button className="btn btn-outline btn-sm" onClick={handleLogout}>
+        <button className="btn btn-outline btn-sm logout-btn" onClick={handleLogout}>
           <i className="bi bi-box-arrow-right"></i>
-          <span style={{ display: "inline" }}>Logout</span>
+          <span className="logout-text">Logout</span>
         </button>
       </div>
     </header>

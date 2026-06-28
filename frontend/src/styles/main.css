@@ -226,6 +226,7 @@ textarea {
   letter-spacing: -0.01em;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   flex-shrink: 0;
+  position: relative;
 }
 
 .sidebar-brand .brand-icon {
@@ -238,6 +239,7 @@ textarea {
   justify-content: center;
   font-size: 1.2rem;
   backdrop-filter: blur(4px);
+  overflow: hidden;
 }
 
 .sidebar-brand .brand-text {
@@ -251,6 +253,25 @@ textarea {
   font-size: 0.65rem;
   opacity: 0.6;
   letter-spacing: 0.3px;
+}
+
+/* Sidebar close button (visible on mobile) */
+.sidebar-close-btn {
+  display: none;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 1.2rem;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border-radius: var(--radius-sm);
+  margin-left: auto;
+}
+
+.sidebar-close-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
 }
 
 .sidebar-nav {
@@ -345,6 +366,29 @@ textarea {
   margin-right: 6px;
 }
 
+/* Sidebar Overlay */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 49;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.sidebar-overlay.active {
+  display: block;
+  opacity: 1;
+}
+
+/* When sidebar is open on mobile, show overlay */
+@media (max-width: 768px) {
+  .sidebar.open ~ .sidebar-overlay {
+    display: block;
+    opacity: 1;
+  }
+}
 /* ============================================================
    Navbar — clean, elevated, with subtle border
    ============================================================ */
@@ -371,19 +415,29 @@ textarea {
   gap: 18px;
 }
 
+/* Navbar toggle button - always visible on all screens */
 .navbar-toggle {
-  display: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   font-size: 1.5rem;
   color: var(--color-text-secondary);
-  padding: 4px 8px;
+  padding: 6px 10px;
   border-radius: var(--radius-sm);
-  transition: background 0.15s;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  line-height: 1;
 }
 
 .navbar-toggle:hover {
   background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.navbar-toggle:active {
+  transform: scale(0.95);
 }
 
 .navbar-breadcrumb {
@@ -394,9 +448,19 @@ textarea {
   gap: 8px;
 }
 
-.navbar-breadcrumb .current {
-  color: var(--color-text);
+.navbar-breadcrumb .brand-name {
   font-weight: 600;
+  color: var(--color-text);
+}
+
+.navbar-breadcrumb .separator {
+  color: var(--color-text-muted);
+  margin: 0 4px;
+}
+
+.navbar-breadcrumb .current {
+  color: var(--color-text-muted);
+  font-weight: 500;
 }
 
 .navbar-session-pill {
@@ -420,6 +484,10 @@ textarea {
   background: var(--color-danger-light);
   color: var(--color-danger);
   border-color: rgba(224, 49, 49, 0.15);
+}
+
+.navbar-session-pill .pill-text {
+  display: inline;
 }
 
 .navbar-right {
@@ -498,6 +566,11 @@ textarea {
   font-size: 0.85rem;
   flex-shrink: 0;
   box-shadow: 0 2px 8px rgba(29, 111, 66, 0.2);
+}
+
+/* Logout button */
+.logout-btn .logout-text {
+  display: inline;
 }
 
 /* ============================================================
@@ -815,6 +888,16 @@ select.form-control {
   padding-right: 40px;
 }
 
+/* Hide number input arrows */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
 /* ============================================================
    Modal
    ============================================================ */
@@ -1041,6 +1124,13 @@ select.form-control {
    Responsive
    ============================================================ */
 
+/* On desktop, keep the toggle button visible */
+@media (min-width: 769px) {
+  .navbar-toggle {
+    display: inline-flex;
+  }
+}
+
 @media (max-width: 1200px) {
   .pos-layout {
     grid-template-columns: 1.2fr 1fr;
@@ -1061,9 +1151,21 @@ select.form-control {
   }
 }
 
+@media (max-width: 1024px) {
+  /* Hide full brand name on tablet */
+  .navbar-breadcrumb .brand-name {
+    display: none;
+  }
+  
+  .navbar-breadcrumb .separator {
+    display: none;
+  }
+}
+
 @media (max-width: 768px) {
   .sidebar {
     transform: translateX(-100%);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   .sidebar.open {
@@ -1074,24 +1176,72 @@ select.form-control {
     margin-left: 0;
   }
 
+  /* Show hamburger icon on mobile too */
   .navbar-toggle {
     display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Hide breadcrumb on mobile */
+  .navbar-breadcrumb {
+    display: none;
+  }
+
+  /* Session pill compact */
+  .navbar-session-pill {
+    padding: 4px 10px;
+    font-size: 0.7rem;
+  }
+  
+  .navbar-session-pill .pill-text {
+    display: none;
+  }
+
+  /* Hide logout text on mobile */
+  .logout-btn .logout-text {
+    display: none;
+  }
+  
+  .logout-btn {
+    padding: 6px 10px;
+    font-size: 0.8rem;
+  }
+
+  /* Hide user info on mobile */
+  .navbar-user-info {
+    display: none;
+  }
+
+  /* Smaller avatar on mobile */
+  .navbar-avatar {
+    width: 32px;
+    height: 32px;
+    font-size: 0.75rem;
+  }
+
+  /* Hide notification and help icons on small screens */
+  .navbar-actions {
+    display: none;
+  }
+
+  /* Navbar padding adjustment */
+  .navbar {
+    padding: 0 12px;
+    height: 60px;
+  }
+
+  /* Sidebar close button */
+  .sidebar-close-btn {
+    display: block;
+  }
+  
+  .sidebar-brand {
+    padding: 16px 16px 16px 18px;
   }
 
   .app-content {
     padding: 16px;
-  }
-
-  .navbar {
-    padding: 0 16px;
-  }
-
-  .navbar-session-pill span {
-    display: none;
-  }
-
-  .navbar-user-info {
-    display: none;
   }
 
   .kpi-grid {
@@ -1118,6 +1268,33 @@ select.form-control {
 }
 
 @media (max-width: 480px) {
+  /* Even smaller navbar */
+  .navbar {
+    height: 56px;
+    padding: 0 10px;
+  }
+
+  .navbar-avatar {
+    width: 28px;
+    height: 28px;
+    font-size: 0.7rem;
+  }
+
+  .navbar-toggle {
+    font-size: 1.3rem;
+    padding: 4px 8px;
+  }
+
+  .navbar-session-pill {
+    padding: 3px 8px;
+    font-size: 0.65rem;
+  }
+
+  .logout-btn {
+    padding: 4px 8px;
+    font-size: 0.75rem;
+  }
+
   .kpi-grid {
     grid-template-columns: 1fr;
   }
@@ -1136,14 +1313,6 @@ select.form-control {
   .data-table td {
     padding: 8px 10px;
     font-size: 0.8rem;
-  }
-
-  .navbar {
-    height: 60px;
-  }
-
-  .navbar-breadcrumb {
-    font-size: 0.75rem;
   }
 }
 

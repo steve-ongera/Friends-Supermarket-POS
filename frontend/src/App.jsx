@@ -1,4 +1,3 @@
-
 import React from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 
@@ -23,9 +22,23 @@ import SubscriptionPage from "./pages/Subscription.jsx";
 import Settings from "./pages/Settings.jsx";
 
 function AppLayout({ children }) {
+  // Close sidebar function
+  const closeSidebar = () => {
+    const sidebar = document.getElementById("app-sidebar");
+    if (sidebar) {
+      sidebar.classList.remove("open");
+    }
+  };
+
   return (
     <div className="app-shell">
       <Sidebar />
+      {/* Sidebar Overlay - click to close on mobile */}
+      <div 
+        className="sidebar-overlay" 
+        id="sidebar-overlay"
+        onClick={closeSidebar}
+      ></div>
       <div className="app-main">
         <Navbar />
         <div className="app-content">{children}</div>

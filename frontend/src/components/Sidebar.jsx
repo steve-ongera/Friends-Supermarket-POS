@@ -19,6 +19,22 @@ const NAV_ITEMS = [
 export default function Sidebar() {
   const { user } = useAuth();
 
+  // Close sidebar when a link is clicked (on mobile)
+  const handleLinkClick = () => {
+    const sidebar = document.getElementById("app-sidebar");
+    if (sidebar && window.innerWidth <= 768) {
+      sidebar.classList.remove("open");
+    }
+  };
+
+  // Close sidebar function
+  const closeSidebar = () => {
+    const sidebar = document.getElementById("app-sidebar");
+    if (sidebar) {
+      sidebar.classList.remove("open");
+    }
+  };
+
   // Group navigation items for better organization
   const mainItems = NAV_ITEMS.filter(item => 
     !item.roles || item.roles.includes(user?.role)
@@ -47,6 +63,14 @@ export default function Sidebar() {
           <span>Friends POS</span>
           <small>Supermarket Management</small>
         </div>
+        {/* Close button for mobile */}
+        <button 
+          className="sidebar-close-btn"
+          onClick={closeSidebar}
+          aria-label="Close sidebar"
+        >
+          <i className="bi bi-x-lg"></i>
+        </button>
       </div>
 
       <nav className="sidebar-nav">
@@ -58,6 +82,7 @@ export default function Sidebar() {
                 key={item.to}
                 to={item.to}
                 className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
+                onClick={handleLinkClick}
               >
                 <i className={`bi ${item.icon}`}></i>
                 <span>{item.label}</span>
@@ -74,6 +99,7 @@ export default function Sidebar() {
                 key={item.to}
                 to={item.to}
                 className={({ isActive }) => `sidebar-link${isActive ? " active" : ""}`}
+                onClick={handleLinkClick}
               >
                 <i className={`bi ${item.icon}`}></i>
                 <span>{item.label}</span>
