@@ -8,23 +8,17 @@ import {
 } from "../services/api";
 import api from "../services/api";
 
-// PATCH /subscription/ isn't exported from services/api.js yet — add it
-// inline here using the shared `api` axios instance instead of duplicating
-// the whole file. (Move this into api.js as `updateSubscription` if you
-// prefer keeping all endpoints centralized there.)
 const updateSubscription = (data) => api.patch("/subscription/", data);
 
 const POLL_INTERVAL_MS = 3000;
-const MAX_POLL_ATTEMPTS = 40; // ~2 minutes
+const MAX_POLL_ATTEMPTS = 40;
 
 export default function Subscription() {
   const [subscription, setSubscription] = useState(null);
   const [packages, setPackages] = useState([]);
   const [loading, setLoading] = useState(true);
-
-  // --- Upgrade flow state ---
-  const [upgradingPackageId, setUpgradingPackageId] = useState(null); // which card is mid-flow
-  const [upgradeStatus, setUpgradeStatus] = useState(null); // null | "sending" | "pending" | "success" | "failed"
+  const [upgradingPackageId, setUpgradingPackageId] = useState(null);
+  const [upgradeStatus, setUpgradeStatus] = useState(null);
   const [upgradeError, setUpgradeError] = useState("");
   const [phone, setPhone] = useState("");
   const [pendingPayment, setPendingPayment] = useState(null);
@@ -41,16 +35,6 @@ export default function Subscription() {
     ]).finally(() => setLoading(false));
   };
 
-  // Calculate days remaining
-  const getDaysRemaining = () => {
-    if (!subscription?.end_date) return null;
-    const end = new Date(subscription.end_date);
-    const now = new Date();
-    const diff = Math.ceil((end - now) / (1000 * 60 * 60 * 24));
-    return diff;
-  };
-
-  // Format currency
   const formatCurrency = (value) => {
     return new Intl.NumberFormat('en-KE', {
       style: 'currency',
@@ -60,7 +44,6 @@ export default function Subscription() {
     }).format(value || 0);
   };
 
-  // Get status pill class
   const getStatusPill = (status) => {
     switch(status) {
       case "ACTIVE": return "success";
@@ -69,8 +52,6 @@ export default function Subscription() {
       default: return "neutral";
     }
   };
-
-  // --- Upgrade flow ---
 
   const startUpgrade = (pkg) => {
     setUpgradingPackageId(pkg.id);
@@ -122,9 +103,8 @@ export default function Subscription() {
         setPendingPayment(payment);
 
         if (payment.status === "SUCCESS") {
-          // Payment confirmed — now actually activate the new package.
           try {
-            await updateSubscription({ package: pkg.id, is_active: true });
+            await updateSubscription({ package: pkg.id });
             setUpgradeStatus("success");
             await loadData();
             setTimeout(() => {
@@ -134,7 +114,7 @@ export default function Subscription() {
           } catch {
             setUpgradeStatus("failed");
             setUpgradeError(
-              "Payment succeeded but activating the new package failed. Please contact support — you will not be charged again."
+              "Payment succeeded but activating the new package failed. Please contact support."
             );
           }
           return;
@@ -162,6 +142,34 @@ export default function Subscription() {
         }
       }
     }, POLL_INTERVAL_MS);
+  };
+
+  const getUsagePercentage = () => {
+    if (!subscription) return 0;
+    if (subscription.is_unlimited) return 0;
+    
+    const allocated = subscription.sales_allocated || 0;
+    const remaining = subscription.sales_remaining || 0;
+    
+    if (allocated === 0) return 0;
+    const used = allocated - remaining;
+    return Math.min(100, Math.max(0, (used / allocated) * 100));
+  };
+
+  const getRemainingDisplay = () => {
+    if (!subscription) return "No active subscription";
+    if (subscription.is_unlimited) return "♾️ Unlimited";
+    
+    const remaining = subscription.sales_remaining || 0;
+    const totalRemaining = subscription.total_sales_remaining || 0;
+    
+    if (remaining === 0 && totalRemaining > 0) {
+      return `0 active, ${totalRemaining} total across all bundles`;
+    }
+    
+    if (remaining === 0) return "0 sales remaining";
+    if (remaining === 1) return "1 sale remaining";
+    return `${remaining} sales remaining`;
   };
 
   return (
@@ -212,9 +220,9 @@ export default function Subscription() {
                   <i className="bi bi-check-circle" style={{ color: "var(--color-success)" }}></i>
                   Current Subscription
                 </h3>
-                <span className={`pill ${getStatusPill(subscription.is_active ? "ACTIVE" : "EXPIRED")}`}>
-                  <i className={`bi ${subscription.is_active ? "bi-check-circle" : "bi-exclamation-circle"}`}></i>
-                  {subscription.is_active ? "ACTIVE" : "INACTIVE"}
+                <span className={`pill ${getStatusPill(subscription.status || "ACTIVE")}`}>
+                  <i className={`bi ${subscription.status === "ACTIVE" ? "bi-check-circle" : "bi-exclamation-circle"}`}></i>
+                  {subscription.status || "ACTIVE"}
                 </span>
               </div>
 
@@ -260,68 +268,137 @@ export default function Subscription() {
 
                 <div>
                   <div style={{ fontSize: "0.75rem", color: "var(--color-text-muted)", fontWeight: "600" }}>
-                    <i className="bi bi-calendar-check"></i> Days Remaining
+                    <i className="bi bi-calendar-check"></i> Status
                   </div>
                   <div style={{ 
                     fontSize: "1.1rem", 
                     fontWeight: "700",
-                    color: getDaysRemaining() > 7 ? "var(--color-success)" : "var(--color-danger)"
+                    color: subscription.status === "ACTIVE" ? "var(--color-success)" : "var(--color-danger)"
                   }}>
-                    {getDaysRemaining() !== null ? (
-                      <>
-                        {getDaysRemaining()} days
-                        {getDaysRemaining() <= 7 && (
-                          <span style={{ 
-                            fontSize: "0.75rem", 
-                            fontWeight: "600",
-                            color: "var(--color-danger)",
-                            display: "block"
-                          }}>
-                            <i className="bi bi-exclamation-triangle"></i> Renew soon!
-                          </span>
-                        )}
-                      </>
-                    ) : (
-                      "—"
-                    )}
+                    {subscription.status || "ACTIVE"}
                   </div>
                 </div>
               </div>
 
-              {/* Subscription progress bar */}
-              {subscription.end_date && subscription.start_date && (
-                <div style={{ marginTop: "16px" }}>
-                  <div style={{ 
-                    display: "flex", 
-                    justifyContent: "space-between",
-                    fontSize: "0.75rem",
-                    color: "var(--color-text-muted)",
-                    marginBottom: "4px"
+              {/* Remaining Sales Balance - Like Safaricom */}
+              <div style={{ 
+                marginTop: "20px",
+                padding: "16px",
+                background: "var(--color-bg)",
+                borderRadius: "var(--radius-md)",
+                border: "1px solid var(--color-border-light)"
+              }}>
+                <div style={{ 
+                  display: "flex", 
+                  justifyContent: "space-between", 
+                  alignItems: "center",
+                  marginBottom: "8px"
+                }}>
+                  <span style={{ 
+                    fontSize: "0.85rem", 
+                    fontWeight: "600",
+                    color: "var(--color-text-muted)"
                   }}>
-                    <span>
-                      <i className="bi bi-calendar-plus"></i> {new Date(subscription.start_date).toLocaleDateString()}
-                    </span>
-                    <span>
-                      <i className="bi bi-calendar-x"></i> {new Date(subscription.end_date).toLocaleDateString()}
-                    </span>
-                  </div>
-                  <div style={{ 
-                    width: "100%", 
-                    height: "8px", 
-                    background: "var(--color-bg)",
-                    borderRadius: "var(--radius-full)",
-                    overflow: "hidden"
+                    <i className="bi bi-data"></i> Remaining Sales Balance
+                  </span>
+                  <span style={{ 
+                    fontSize: "1.2rem", 
+                    fontWeight: "700",
+                    color: subscription.is_unlimited ? "var(--color-primary)" : 
+                           (subscription.total_sales_remaining > 10 || subscription.sales_remaining > 10 ? "var(--color-success)" : "var(--color-danger)")
                   }}>
-                    <div style={{ 
-                      width: `${Math.min(100, Math.max(0, ((new Date() - new Date(subscription.start_date)) / (new Date(subscription.end_date) - new Date(subscription.start_date))) * 100))}%`,
-                      height: "100%",
-                      background: `linear-gradient(90deg, var(--color-primary), var(--color-accent))`,
-                      borderRadius: "var(--radius-full)",
-                      transition: "width 0.5s ease"
-                    }}></div>
-                  </div>
+                    {subscription.is_unlimited ? (
+                      "♾️ Unlimited"
+                    ) : (
+                      (subscription.sales_remaining === 0 && subscription.total_sales_remaining > 0) ? (
+                        `${subscription.total_sales_remaining} (queued)`
+                      ) : (
+                        `${subscription.sales_remaining || 0} / ${subscription.sales_allocated || 0}`
+                      )
+                    )}
+                  </span>
                 </div>
-              )}
+
+                {!subscription.is_unlimited && (
+                  <>
+                    {subscription.sales_allocated > 0 && (
+                      <>
+                        <div style={{ 
+                          width: "100%", 
+                          height: "12px", 
+                          background: "var(--color-border-light)",
+                          borderRadius: "var(--radius-full)",
+                          overflow: "hidden",
+                          marginBottom: "6px"
+                        }}>
+                          <div style={{ 
+                            width: `${getUsagePercentage()}%`,
+                            height: "100%",
+                            background: getUsagePercentage() > 80 
+                              ? "linear-gradient(90deg, var(--color-danger), var(--color-warning))"
+                              : "linear-gradient(90deg, var(--color-primary), var(--color-accent))",
+                            borderRadius: "var(--radius-full)",
+                            transition: "width 0.5s ease"
+                          }}></div>
+                        </div>
+                        <div style={{ 
+                          display: "flex", 
+                          justifyContent: "space-between",
+                          fontSize: "0.75rem",
+                          color: "var(--color-text-muted)"
+                        }}>
+                          <span>{getRemainingDisplay()}</span>
+                          <span>
+                            {getUsagePercentage().toFixed(0)}% used
+                          </span>
+                        </div>
+                      </>
+                    )}
+
+                    {subscription.sales_remaining === 0 && subscription.total_sales_remaining > 0 && (
+                      <div style={{ 
+                        marginTop: "8px",
+                        padding: "8px 12px",
+                        background: "var(--color-warning-light)",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid var(--color-warning)",
+                        fontSize: "0.85rem",
+                        color: "var(--color-warning-dark)"
+                      }}>
+                        <i className="bi bi-clock-history"></i> Active bundle consumed. {subscription.total_sales_remaining} sales available in queued bundle(s).
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {subscription.total_sales_remaining !== undefined && subscription.total_sales_remaining !== null && (
+                  <div style={{ 
+                    marginTop: "8px",
+                    paddingTop: "8px",
+                    borderTop: "1px dashed var(--color-border-light)",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    fontSize: "0.8rem"
+                  }}>
+                    <span style={{ color: "var(--color-text-muted)" }}>
+                      <i className="bi bi-stack"></i> Total across all bundles:
+                    </span>
+                    <span style={{ fontWeight: "600", color: "var(--color-primary)" }}>
+                      {subscription.is_unlimited ? "♾️ Unlimited" : subscription.total_sales_remaining}
+                    </span>
+                  </div>
+                )}
+
+                {subscription.queued && subscription.queued.length > 0 && (
+                  <div style={{ 
+                    marginTop: "4px",
+                    fontSize: "0.8rem",
+                    color: "var(--color-text-muted)"
+                  }}>
+                    <i className="bi bi-clock-history"></i> {subscription.queued.length} queued bundle(s) waiting
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -459,7 +536,6 @@ export default function Subscription() {
                         )}
                       </div>
 
-                      {/* Inline M-Pesa upgrade flow for this card */}
                       {isUpgrading && (
                         <div
                           style={{

@@ -1,530 +1,428 @@
 """
-core/management/commands/seed_data.py
+core/management/commands/seed_demo_data.py
 
-Seeds the database with ~6 months of realistic Kenyan supermarket data:
-- 1 Supermarket + Subscription
-- Owner, Manager, and 3 Cashiers
-- Categories, Suppliers, Products (with barcodes, KES pricing)
-- Daily SalesSessions per cashier (with quota lock/unlock cycles)
-- Historical Sales + SaleItems spread across the last N months
-- StockMovements (restocks + sale deductions)
-- M-Pesa Payment records for session unlocks and MPESA sales
+Fast seed — uses bulk_create throughout. Completes in ~30-60 seconds.
+Flushes existing demo data automatically before seeding.
 
 Usage:
-    python manage.py seed_data
-    python manage.py seed_data --months 6
-    python manage.py seed_data --months 6 --flush
+    python manage.py seed_demo_data
 """
 
 import random
 import uuid
-from datetime import timedelta, time, datetime
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
-from django.db import transaction
 from django.utils import timezone
+from django.utils.text import slugify
 
 from core.models import (
-    Supermarket,
-    Package,
-    Subscription,
-    SalesSession,
-    Payment,
-    Category,
-    Supplier,
-    Product,
-    StockMovement,
-    Sale,
-    SaleItem,
+    Category, Package, Product, Sale, SaleItem,
+    SalesSession, StockMovement, Subscription, Supermarket,
 )
 
 User = get_user_model()
 
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+DAYS_BACK   = 90
+DAILY_MIN   = 5
+DAILY_MAX   = 12
+WEEKEND_MIN = 12
+WEEKEND_MAX = 22
+MAX_ITEMS   = 4
+BATCH_SIZE  = 500
 
 # ---------------------------------------------------------------------------
-# Static seed reference data
+# All subscription packages
 # ---------------------------------------------------------------------------
-
-CASHIER_NAMES = [
-    ("Achieng", "Otieno"),
-    ("Wanjiru", "Kamau"),
-    ("Mutiso", "Kioko"),
-    ("Naliaka", "Wafula"),
-    ("Cherono", "Kiprop"),
+PACKAGES = [
+    {
+        "name": "Poa",
+        "description": "Trial users & kiosks. Perfect for getting started.",
+        "daily_free_sales": 10,
+        "unlock_price": Decimal("5.00"),
+        "session_duration_hours": 1,
+    },
+    {
+        "name": "Chapaa",
+        "description": "Small kiosks. A quick top-up for light trading.",
+        "daily_free_sales": 20,
+        "unlock_price": Decimal("10.00"),
+        "session_duration_hours": 3,
+    },
+    {
+        "name": "Biashara",
+        "description": "Small retail shops. Covers a full working shift.",
+        "daily_free_sales": 50,
+        "unlock_price": Decimal("20.00"),
+        "session_duration_hours": 8,
+    },
+    {
+        "name": "Mzinga",
+        "description": "Busy businesses. Full-day unlimited throughput.",
+        "daily_free_sales": 100,
+        "unlock_price": Decimal("50.00"),
+        "session_duration_hours": 24,
+    },
+    {
+        "name": "Weekend Pass",
+        "description": "Weekend traders. Unlimited sales across 3 days.",
+        "daily_free_sales": None,
+        "unlock_price": Decimal("120.00"),
+        "session_duration_hours": 72,
+    },
+    {
+        "name": "Weekly Plus",
+        "description": "Growing businesses. Unlimited sales for a full week.",
+        "daily_free_sales": None,
+        "unlock_price": Decimal("250.00"),
+        "session_duration_hours": 168,
+    },
+    {
+        "name": "Business Pro",
+        "description": "Monthly subscription. Unlimited sales for 30 days.",
+        "daily_free_sales": None,
+        "unlock_price": Decimal("800.00"),
+        "session_duration_hours": 720,
+    },
+    {
+        "name": "Business Elite",
+        "description": "Annual subscription. Unlimited sales for a full year.",
+        "daily_free_sales": None,
+        "unlock_price": Decimal("8000.00"),
+        "session_duration_hours": 8760,
+    },
+    {
+        "name": "Bazooka Enterprise",
+        "description": "Supermarkets & multi-branch businesses. Custom pricing — contact sales.",
+        "daily_free_sales": None,
+        "unlock_price": Decimal("0.00"),   # custom — set per client
+        "session_duration_hours": 8760,
+    },
 ]
 
-CATEGORY_DATA = [
-    "Beverages",
-    "Bakery",
-    "Dairy & Eggs",
-    "Cereals & Grains",
-    "Household Essentials",
-    "Personal Care",
-    "Snacks & Confectionery",
-    "Fresh Produce",
-    "Meat & Poultry",
-    "Cleaning Supplies",
+# ---------------------------------------------------------------------------
+# Demo businesses  (all use Business Pro — unlimited, so sales never block)
+# ---------------------------------------------------------------------------
+SUPERMARKETS = [
+    {
+        "name": "Quickmart Westlands",
+        "phone": "0700111001",
+        "email": "westlands@quickmart.co.ke",
+        "location": "Westlands, Nairobi",
+        "username": "qm_westlands",
+        "password": "password123",
+        "first_name": "James", "last_name": "Kariuki",
+    },
+    {
+        "name": "Naivas Ngong Road",
+        "phone": "0700222002",
+        "email": "ngong@naivas.co.ke",
+        "location": "Ngong Road, Nairobi",
+        "username": "naivas_ngong",
+        "password": "password123",
+        "first_name": "Grace", "last_name": "Wanjiku",
+    },
+    {
+        "name": "Choppies Mombasa Road",
+        "phone": "0700333003",
+        "email": "mombasa@choppies.co.ke",
+        "location": "Mombasa Road, Nairobi",
+        "username": "choppies_mbsa",
+        "password": "password123",
+        "first_name": "Ali", "last_name": "Hassan",
+    },
 ]
 
-SUPPLIER_DATA = [
-    ("Brookside Dairy Ltd", "0722111222"),
-    ("Unga Group Suppliers", "0733222333"),
-    ("Kapa Oil Refineries", "0711333444"),
-    ("Tropical Heat Distributors", "0700444555"),
-    ("Coca-Cola Nairobi Bottlers", "0722555666"),
-    ("Kenafric Industries", "0733666777"),
-    ("Bidco Africa Distributors", "0711777888"),
-    ("Wakulima Fresh Produce", "0700888999"),
+# ---------------------------------------------------------------------------
+# 30 realistic Kenyan supermarket products
+# (category, name, cost_kes, selling_kes, unit)
+# ---------------------------------------------------------------------------
+CATALOGUE = [
+    ("Dairy & Eggs",    "Brookside Fresh Milk 1L",        100, 130, "pcs"),
+    ("Dairy & Eggs",    "KCC Butter 250g",                180, 230, "pcs"),
+    ("Dairy & Eggs",    "Fresha Eggs Tray 30",            350, 430, "tray"),
+    ("Dairy & Eggs",    "Daima Yoghurt 500ml",            120, 155, "pcs"),
+    ("Bread & Bakery",  "Festive Sliced White Bread",      50,  65, "pcs"),
+    ("Bread & Bakery",  "Supa Loaf Brown Bread",           55,  70, "pcs"),
+    ("Grains & Flours", "Unga Dola Maize Flour 2kg",      130, 165, "pcs"),
+    ("Grains & Flours", "Basmati Rice 1kg",               150, 200, "kg"),
+    ("Grains & Flours", "Pishori Rice 5kg",               700, 900, "pcs"),
+    ("Cooking Oils",    "Elianto Sunflower Oil 1L",       200, 260, "pcs"),
+    ("Cooking Oils",    "Rina Cooking Oil 2L",            380, 480, "pcs"),
+    ("Cooking Oils",    "Kimbo Cooking Fat 500g",         140, 185, "pcs"),
+    ("Sugar & Spices",  "Mumias Sugar 2kg",               255, 320, "pcs"),
+    ("Sugar & Spices",  "Kensalt Iodised Salt 500g",       45,  60, "pcs"),
+    ("Sugar & Spices",  "Royco Mchuzi Mix 75g",            35,  50, "pcs"),
+    ("Tea & Coffee",    "Ketepa Pride Tea 100 bags",      200, 260, "pcs"),
+    ("Tea & Coffee",    "Africafe Instant Coffee 50g",    180, 230, "pcs"),
+    ("Beverages",       "Keringet Water 500ml",            30,  40, "pcs"),
+    ("Beverages",       "Coca Cola 500ml",                 55,  75, "pcs"),
+    ("Beverages",       "Delmonte Juice Mango 1L",        150, 195, "pcs"),
+    ("Personal Care",   "Colgate Toothpaste 75ml",         80, 110, "pcs"),
+    ("Personal Care",   "Dettol Bar Soap 175g",            80, 105, "pcs"),
+    ("Personal Care",   "Nivea Body Lotion 200ml",        350, 450, "pcs"),
+    ("Household",       "Ariel Detergent 1kg",            300, 390, "pcs"),
+    ("Household",       "Jik Bleach 1L",                  160, 210, "pcs"),
+    ("Household",       "Toilet Paper Softex 4-roll",     140, 185, "pcs"),
+    ("Snacks",          "Pringles Original 110g",         180, 230, "pcs"),
+    ("Snacks",          "Digestive Biscuits 400g",        130, 170, "pcs"),
+    ("Canned Foods",    "Kenshero Sardines 425g",          90, 120, "pcs"),
+    ("Canned Foods",    "Indomie Noodles Chicken 70g",     25,  35, "pcs"),
 ]
 
-# (name, category index, unit, cost_price, selling_price)
-PRODUCT_DATA = [
-    ("Fresh Milk 500ml", 2, "pcs", 45, 55),
-    ("Brookside Yoghurt 250ml", 2, "pcs", 50, 65),
-    ("Large Eggs Tray (30pcs)", 2, "tray", 360, 420),
-    ("White Bread 400g", 1, "pcs", 55, 65),
-    ("Brown Bread 400g", 1, "pcs", 60, 70),
-    ("Digestive Biscuits 250g", 5, "pcs", 80, 100),
-    ("Soda 500ml (Coca-Cola)", 0, "pcs", 45, 60),
-    ("Soda 2L (Fanta)", 0, "pcs", 120, 150),
-    ("Mineral Water 1L", 0, "pcs", 40, 55),
-    ("Unga wa Ngano 2kg", 3, "pcs", 180, 210),
-    ("Unga wa Sembe 2kg", 3, "pcs", 140, 165),
-    ("Rice Pishori 2kg", 3, "pcs", 280, 330),
-    ("Cooking Oil 2L (Fresh Fri)", 4, "pcs", 480, 540),
-    ("Sugar 2kg", 4, "pcs", 260, 300),
-    ("Salt 1kg", 4, "pcs", 35, 45),
-    ("Bar Soap 800g", 5, "pcs", 130, 160),
-    ("Toothpaste 100ml", 5, "pcs", 110, 140),
-    ("Toilet Tissue 4-pack", 5, "pack", 150, 190),
-    ("Sanitary Pads (Pack of 8)", 5, "pack", 95, 120),
-    ("Potato Crisps 100g", 6, "pcs", 60, 80),
-    ("Chocolate Bar 50g", 6, "pcs", 70, 90),
-    ("Tomatoes 1kg", 7, "kg", 60, 90),
-    ("Onions 1kg", 7, "kg", 70, 100),
-    ("Sukuma Wiki Bunch", 7, "pcs", 15, 25),
-    ("Bananas 1kg", 7, "kg", 50, 70),
-    ("Chicken Whole (1.5kg)", 8, "pcs", 450, 550),
-    ("Beef 1kg", 8, "kg", 480, 600),
-    ("Sausages 500g Pack", 8, "pack", 220, 270),
-    ("Dishwashing Liquid 500ml", 9, "pcs", 90, 120),
-    ("Bleach 1L (Jik)", 9, "pcs", 100, 130),
-    ("Laundry Detergent 1kg (Omo)", 9, "pcs", 220, 260),
-]
-
-PAYMENT_METHOD_WEIGHTS = [
-    ("CASH", 0.50),
-    ("MPESA", 0.42),
-    ("CARD", 0.08),
-]
-
-
-def weighted_choice(choices):
-    methods, weights = zip(*choices)
-    return random.choices(methods, weights=weights, k=1)[0]
-
-
-def random_business_time(day):
-    """Random datetime during business hours (7am - 9pm) for a given date."""
-    hour = random.randint(7, 20)
-    minute = random.randint(0, 59)
-    second = random.randint(0, 59)
-    naive = datetime.combine(day, time(hour, minute, second))
-    return timezone.make_aware(naive)
+PAYMENT_METHODS = ["CASH", "MPESA", "CARD"]
+PAYMENT_WEIGHTS = [0.55, 0.35, 0.10]
 
 
 class Command(BaseCommand):
-    help = "Seed the database with ~6 months of realistic Kenyan supermarket POS data."
-
-    def add_arguments(self, parser):
-        parser.add_argument(
-            "--months", type=int, default=6, help="Number of months of history to generate (default: 6)"
-        )
-        parser.add_argument(
-            "--flush", action="store_true", help="Delete existing seed-related data before generating new data."
-        )
-        parser.add_argument(
-            "--max-sales-per-day", type=int, default=35,
-            help="Upper bound of sales generated per cashier per day (default: 35)",
-        )
+    help = "Fast-seeds packages, 3 demo supermarkets, products + 3 months of sales."
 
     def handle(self, *args, **options):
-        months = options["months"]
-        flush = options["flush"]
-        max_sales_per_day = options["max_sales_per_day"]
+        self._flush()
+        self._seed_packages()
+        demo_package = Package.objects.get(name="Business Pro")
 
-        if flush:
-            self.stdout.write(self.style.WARNING("Flushing existing data..."))
-            self._flush_data()
+        for sm_data in SUPERMARKETS:
+            self.stdout.write(f"\n── {sm_data['name']} ──")
+            supermarket, cashier, session = self._create_supermarket(sm_data, demo_package)
+            products = self._seed_products(supermarket)
+            self._seed_sales(supermarket, cashier, session, products)
 
-        with transaction.atomic():
-            supermarket, package = self._create_supermarket_and_package()
-            owner, manager, cashiers = self._create_staff(supermarket)
-            categories = self._create_categories(supermarket)
-            suppliers = self._create_suppliers(supermarket)
-            products = self._create_products(supermarket, categories, suppliers)
+        self.stdout.write(self.style.SUCCESS("\n✓ Done."))
 
-        self.stdout.write(self.style.SUCCESS(
-            f"Created supermarket '{supermarket.name}' with {len(products)} products, "
-            f"{len(cashiers)} cashiers."
-        ))
-
-        self._generate_sales_history(
-            supermarket=supermarket,
-            package=package,
-            cashiers=cashiers,
-            products=products,
-            months=months,
-            max_sales_per_day=max_sales_per_day,
+    # -----------------------------------------------------------------------
+    # Flush all demo data first
+    # -----------------------------------------------------------------------
+    def _flush(self):
+        names     = [s["name"]     for s in SUPERMARKETS]
+        usernames = [s["username"] for s in SUPERMARKETS]
+        sm_count, _ = Supermarket.objects.filter(name__in=names).delete()
+        u_count,  _ = User.objects.filter(username__in=usernames).delete()
+        self.stdout.write(
+            self.style.WARNING(
+                f"Flushed {sm_count} supermarket(s) + {u_count} user(s) "
+                f"and all cascaded data.\n"
+            )
         )
 
-        self.stdout.write(self.style.SUCCESS("✅ Seed data generation complete."))
-
-    # -----------------------------------------------------------------
-    # Setup helpers
-    # -----------------------------------------------------------------
-
-    def _flush_data(self):
-        Payment.objects.all().delete()
-        SaleItem.objects.all().delete()
-        Sale.objects.all().delete()
-        SalesSession.objects.all().delete()
-        StockMovement.objects.all().delete()
-        Product.objects.all().delete()
-        Supplier.objects.all().delete()
-        Category.objects.all().delete()
-        Subscription.objects.all().delete()
-        User.objects.filter(is_superuser=False).delete()
-        Supermarket.objects.all().delete()
-        Package.objects.all().delete()
-
-    def _create_supermarket_and_package(self):
-        package, _ = Package.objects.get_or_create(
-            name="Free Daily Tier",
-            defaults={
-                "description": "20 free sales per session, KES 100 to unlock a new session via M-Pesa.",
-                "daily_free_sales": 20,
-                "unlock_price": Decimal("100.00"),
-                "session_duration_hours": 24,
-            },
-        )
-
-        supermarket, _ = Supermarket.objects.get_or_create(
-            slug="friends-supermarket-nairobi",
-            defaults={
-                "name": "Friends Supermarket",
-                "location": "Buruburu, Nairobi",
-                "phone_number": "0712345678",
-                "email": "info@friendssupermarket.co.ke",
-                "kra_pin": "P051234567A",
-                "mpesa_shortcode": "174379",
-                "is_active": True,
-            },
-        )
-
-        Subscription.objects.get_or_create(
-            supermarket=supermarket, defaults={"package": package, "is_active": True}
-        )
-
-        return supermarket, package
-
-    def _create_staff(self, supermarket):
-        owner, created = User.objects.get_or_create(
-            username="owner_friends",
-            defaults={
-                "first_name": "Daniel",
-                "last_name": "Mwangi",
-                "email": "owner@friendssupermarket.co.ke",
-                "phone_number": "0712345678",
-                "role": User.Role.OWNER,
-                "supermarket": supermarket,
-            },
-        )
-        if created:
-            owner.set_password("password123")
-            owner.save()
-
-        manager, created = User.objects.get_or_create(
-            username="manager_friends",
-            defaults={
-                "first_name": "Grace",
-                "last_name": "Njoki",
-                "email": "manager@friendssupermarket.co.ke",
-                "phone_number": "0722334455",
-                "role": User.Role.MANAGER,
-                "supermarket": supermarket,
-            },
-        )
-        if created:
-            manager.set_password("password123")
-            manager.save()
-
-        cashiers = []
-        for i, (first, last) in enumerate(CASHIER_NAMES, start=1):
-            username = f"cashier{i}_{first.lower()}"
-            cashier, created = User.objects.get_or_create(
-                username=username,
+    # -----------------------------------------------------------------------
+    # Seed all 9 packages (upsert — safe to re-run)
+    # -----------------------------------------------------------------------
+    def _seed_packages(self):
+        created = updated = 0
+        for data in PACKAGES:
+            _, is_new = Package.objects.update_or_create(
+                name=data["name"],
                 defaults={
-                    "first_name": first,
-                    "last_name": last,
-                    "email": f"{username}@friendssupermarket.co.ke",
-                    "phone_number": f"07{random.randint(10000000, 99999999)}",
-                    "role": User.Role.CASHIER,
-                    "supermarket": supermarket,
+                    "description":            data["description"],
+                    "daily_free_sales":       data["daily_free_sales"],
+                    "unlock_price":           data["unlock_price"],
+                    "session_duration_hours": data["session_duration_hours"],
+                    "is_active":              True,
                 },
             )
-            if created:
-                cashier.set_password("password123")
-                cashier.save()
-            cashiers.append(cashier)
+            if is_new:
+                created += 1
+            else:
+                updated += 1
 
-        return owner, manager, cashiers
-
-    def _create_categories(self, supermarket):
-        categories = []
-        for name in CATEGORY_DATA:
-            category, _ = Category.objects.get_or_create(supermarket=supermarket, name=name)
-            categories.append(category)
-        return categories
-
-    def _create_suppliers(self, supermarket):
-        suppliers = []
-        for name, phone in SUPPLIER_DATA:
-            supplier, _ = Supplier.objects.get_or_create(
-                supermarket=supermarket,
-                name=name,
-                defaults={"phone_number": phone, "address": "Nairobi, Kenya"},
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Packages: {created} created, {updated} updated.\n"
             )
-            suppliers.append(supplier)
-        return suppliers
-
-    def _create_products(self, supermarket, categories, suppliers):
-        products = []
-        for name, cat_index, unit, cost, price in PRODUCT_DATA:
-            barcode = f"6{random.randint(100000000000, 999999999999)}"
-            product, created = Product.objects.get_or_create(
-                supermarket=supermarket,
-                name=name,
-                defaults={
-                    "category": categories[cat_index],
-                    "supplier": random.choice(suppliers),
-                    "barcode": barcode,
-                    "unit": unit,
-                    "cost_price": Decimal(cost),
-                    "selling_price": Decimal(price),
-                    "quantity_in_stock": Decimal(random.randint(80, 250)),
-                    "reorder_level": Decimal(random.randint(10, 25)),
-                },
+        )
+        # Pretty summary table
+        self.stdout.write(
+            f"  {'Package':<22} {'Sales':>8}  {'Price (KES)':>12}  {'Hours':>6}"
+        )
+        self.stdout.write("  " + "-" * 54)
+        for p in Package.objects.filter(
+            name__in=[d["name"] for d in PACKAGES]
+        ).order_by("unlock_price"):
+            limit = str(p.daily_free_sales) if p.daily_free_sales else "Unlimited"
+            price = f"{p.unlock_price}" if p.unlock_price > 0 else "Custom"
+            self.stdout.write(
+                f"  {p.name:<22} {limit:>8}  {price:>12}  {p.session_duration_hours:>6}h"
             )
-            if created:
-                StockMovement.objects.create(
-                    product=product,
-                    movement_type=StockMovement.MovementType.RESTOCK,
-                    quantity=product.quantity_in_stock,
-                    note="Initial stock seed",
-                )
-            products.append(product)
-        return products
 
-    # -----------------------------------------------------------------
-    # Historical sales generation
-    # -----------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Supermarket + owner + subscription + session
+    # -----------------------------------------------------------------------
+    def _create_supermarket(self, data, package):
+        slug = slugify(data["name"])
+        supermarket = Supermarket.objects.create(
+            name=data["name"], slug=slug,
+            phone_number=data["phone"], email=data["email"],
+            location=data["location"],
+        )
 
-    def _generate_sales_history(self, supermarket, package, cashiers, products, months, max_sales_per_day):
-        today = timezone.localdate()
-        start_date = today - timedelta(days=30 * months)
-        total_days = (today - start_date).days
+        owner = User(
+            username=data["username"], email=data["email"],
+            first_name=data["first_name"], last_name=data["last_name"],
+            role=User.Role.OWNER, supermarket=supermarket,
+        )
+        owner.set_password(data["password"])
+        owner.save()
 
-        self.stdout.write(self.style.NOTICE(
-            f"Generating {total_days} days of sales history "
-            f"({start_date} -> {today}) for {len(cashiers)} cashiers..."
-        ))
+        # Business Pro = unlimited, so demo sales are never gated
+        Subscription.objects.create(
+            supermarket=supermarket, package=package,
+            sales_allocated=0, sales_remaining=0,
+            status=Subscription.Status.ACTIVE,
+            started_at=timezone.now(),
+        )
 
-        receipt_counter = 0
-        payment_counter = 0
-
-        for day_offset in range(total_days):
-            day = start_date + timedelta(days=day_offset)
-
-            # Skip ~1 in 20 days to simulate closures (e.g. public holidays)
-            if random.random() < 0.05:
-                continue
-
-            for cashier in cashiers:
-                num_sales_today = random.randint(5, max_sales_per_day)
-                receipt_counter, payment_counter = self._generate_day_for_cashier(
-                    supermarket=supermarket,
-                    package=package,
-                    cashier=cashier,
-                    products=products,
-                    day=day,
-                    num_sales=num_sales_today,
-                    receipt_counter=receipt_counter,
-                    payment_counter=payment_counter,
-                )
-
-            if day_offset % 30 == 0:
-                self.stdout.write(f"  ...processed up to {day} ({day_offset}/{total_days} days)")
-
-        self.stdout.write(self.style.SUCCESS(
-            f"Generated {receipt_counter} sales and {payment_counter} M-Pesa session-unlock payments."
-        ))
-
-    def _generate_day_for_cashier(
-        self, supermarket, package, cashier, products, day, num_sales, receipt_counter, payment_counter
-    ):
-        sales_limit = package.daily_free_sales
         session = SalesSession.objects.create(
-            supermarket=supermarket,
-            cashier=cashier,
-            package=package,
-            sales_limit=sales_limit,
+            supermarket=supermarket, cashier=owner,
+            package=package, sales_limit=None,
             status=SalesSession.Status.ACTIVE,
         )
-        # Backdate the session start to the simulated day
-        session.started_at = random_business_time(day)
-        session.save(update_fields=["started_at"])
 
-        for _ in range(num_sales):
-            # If quota exhausted, simulate an M-Pesa unlock payment + new session
-            if session.sales_count >= session.sales_limit:
-                payment_counter += 1
-                payment = Payment.objects.create(
-                    supermarket=supermarket,
-                    initiated_by=cashier,
-                    purpose=Payment.Purpose.SESSION_UNLOCK,
-                    amount=package.unlock_price,
-                    phone_number=cashier.phone_number or "0700000000",
-                    status=Payment.Status.SUCCESS,
-                    mpesa_receipt_number=f"S{uuid.uuid4().hex[:8].upper()}",
-                    result_code="0",
-                    result_desc="The service request is processed successfully.",
+        self.stdout.write(f"  ✓ Supermarket + owner created")
+        return supermarket, owner, session
+
+    # -----------------------------------------------------------------------
+    # Products — single bulk_create
+    # -----------------------------------------------------------------------
+    def _seed_products(self, supermarket):
+        category_cache = {}
+        to_create = []
+
+        for (cat_name, name, cost, selling, unit) in CATALOGUE:
+            if cat_name not in category_cache:
+                cat, _ = Category.objects.get_or_create(
+                    supermarket=supermarket, name=cat_name
                 )
-                payment.created_at = random_business_time(day)
-                payment.save(update_fields=["created_at"])
+                category_cache[cat_name] = cat
 
-                session.status = SalesSession.Status.LOCKED
-                session.locked_at = payment.created_at
-                session.save(update_fields=["status", "locked_at"])
+            to_create.append(Product(
+                id=uuid.uuid4(),
+                supermarket=supermarket,
+                category=category_cache[cat_name],
+                name=name,
+                barcode=uuid.uuid4().hex[:12].upper(),
+                unit=unit,
+                cost_price=Decimal(str(cost)),
+                selling_price=Decimal(str(selling)),
+                quantity_in_stock=Decimal(str(random.randint(50, 200))),
+                reorder_level=Decimal("10.00"),
+                is_active=True,
+            ))
 
-                session = SalesSession.objects.create(
+        products = Product.objects.bulk_create(to_create)
+        self.stdout.write(f"  ✓ {len(products)} products created")
+        return products
+
+    # -----------------------------------------------------------------------
+    # Sales — build in memory, then 3 bulk_create passes
+    # -----------------------------------------------------------------------
+    def _seed_sales(self, supermarket, cashier, session, products):
+        now   = timezone.now()
+        start = now - timedelta(days=DAYS_BACK)
+
+        sales_buf = []
+        items_buf = []
+        moves_buf = []
+        seen      = set()
+        total     = 0
+
+        current = start
+        while current <= now:
+            dow   = current.weekday()
+            count = (
+                random.randint(WEEKEND_MIN, WEEKEND_MAX)
+                if dow >= 5
+                else random.randint(DAILY_MIN, DAILY_MAX)
+            )
+
+            for _ in range(count):
+                sale_time = current.replace(
+                    hour=random.randint(7, 20),
+                    minute=random.randint(0, 59),
+                    second=random.randint(0, 59),
+                )
+                if sale_time > now:
+                    continue
+
+                while True:
+                    rcpt = f"RCPT-{uuid.uuid4().hex[:10].upper()}"
+                    if rcpt not in seen:
+                        seen.add(rcpt)
+                        break
+
+                method   = random.choices(PAYMENT_METHODS, PAYMENT_WEIGHTS)[0]
+                sale_id  = uuid.uuid4()
+                chosen   = random.sample(products, random.randint(1, MAX_ITEMS))
+                subtotal = Decimal("0.00")
+
+                for product in chosen:
+                    qty        = Decimal(str(random.randint(1, 3)))
+                    line_total = qty * product.selling_price
+                    subtotal  += line_total
+
+                    items_buf.append(SaleItem(
+                        sale_id=sale_id,
+                        product=product,
+                        product_name=product.name,
+                        barcode=product.barcode,
+                        quantity=qty,
+                        unit_price=product.selling_price,
+                        line_total=line_total,
+                    ))
+                    moves_buf.append(StockMovement(
+                        product=product,
+                        movement_type=StockMovement.MovementType.SALE,
+                        quantity=-qty,
+                        note=f"Demo sale {rcpt}",
+                        performed_by=cashier,
+                    ))
+
+                tendered = (
+                    subtotal + Decimal(str(random.randint(0, 50)))
+                    if method == "CASH" else subtotal
+                )
+
+                sales_buf.append(Sale(
+                    id=sale_id,
                     supermarket=supermarket,
                     cashier=cashier,
-                    package=package,
-                    sales_limit=sales_limit,
-                    status=SalesSession.Status.ACTIVE,
-                    unlocked_by_payment=payment,
-                )
-                session.started_at = payment.created_at
-                session.save(update_fields=["started_at"])
+                    session=session,
+                    receipt_number=rcpt,
+                    payment_method=method,
+                    subtotal=subtotal,
+                    discount=Decimal("0.00"),
+                    tax=Decimal("0.00"),
+                    total=subtotal,
+                    amount_tendered=tendered,
+                    change_due=max(tendered - subtotal, Decimal("0.00")),
+                    status=Sale.Status.COMPLETED,
+                    created_at=sale_time,
+                ))
+                total += 1
 
-            receipt_counter += 1
-            self._create_sale(supermarket, cashier, session, products, day)
-            session.sales_count += 1
-            if session.sales_count >= session.sales_limit:
-                session.status = SalesSession.Status.LOCKED
-                session.locked_at = timezone.now()
-            session.save(update_fields=["sales_count", "status", "locked_at"])
+            current += timedelta(days=1)
 
-        return receipt_counter, payment_counter
+        self.stdout.write(f"  · Inserting {total} sales …", ending="")
+        for i in range(0, len(sales_buf), BATCH_SIZE):
+            Sale.objects.bulk_create(sales_buf[i:i + BATCH_SIZE])
+        self.stdout.write(" ✓")
 
-    def _create_sale(self, supermarket, cashier, session, products, day):
-        sale_time = random_business_time(day)
-        payment_method = weighted_choice(PAYMENT_METHOD_WEIGHTS)
+        self.stdout.write(f"  · Inserting {len(items_buf)} line items …", ending="")
+        for i in range(0, len(items_buf), BATCH_SIZE):
+            SaleItem.objects.bulk_create(items_buf[i:i + BATCH_SIZE])
+        self.stdout.write(" ✓")
 
-        num_items = random.randint(1, 6)
-        chosen_products = random.sample(products, k=min(num_items, len(products)))
+        self.stdout.write(f"  · Inserting {len(moves_buf)} stock movements …", ending="")
+        for i in range(0, len(moves_buf), BATCH_SIZE):
+            StockMovement.objects.bulk_create(moves_buf[i:i + BATCH_SIZE])
+        self.stdout.write(" ✓")
 
-        sale = Sale(
-            supermarket=supermarket,
-            cashier=cashier,
-            session=session,
-            payment_method=payment_method,
-            status=Sale.Status.COMPLETED,
-            customer_phone=f"07{random.randint(10000000, 99999999)}" if random.random() < 0.3 else "",
+        SalesSession.objects.filter(pk=session.pk).update(sales_count=total)
+        self.stdout.write(
+            f"  ✓ {total} transactions  ({start.date()} → {now.date()})"
         )
-        sale.created_at = sale_time
-        sale.save()
-
-        subtotal = Decimal("0.00")
-        sale_items = []
-        for product in chosen_products:
-            quantity = Decimal(random.randint(1, 4))
-            line_total = quantity * product.selling_price
-            subtotal += line_total
-
-            sale_items.append(
-                SaleItem(
-                    sale=sale,
-                    product=product,
-                    product_name=product.name,
-                    barcode=product.barcode,
-                    quantity=quantity,
-                    unit_price=product.selling_price,
-                    line_total=line_total,
-                )
-            )
-
-            # Deduct stock (allow restock top-up if running low, to keep numbers plausible)
-            if product.quantity_in_stock < quantity:
-                restock_qty = Decimal(random.randint(50, 150))
-                product.quantity_in_stock += restock_qty
-                StockMovement.objects.create(
-                    product=product,
-                    movement_type=StockMovement.MovementType.RESTOCK,
-                    quantity=restock_qty,
-                    note="Auto-restock during seed simulation",
-                    performed_by=cashier,
-                )
-
-            product.quantity_in_stock -= quantity
-            product.save(update_fields=["quantity_in_stock"])
-
-            StockMovement.objects.create(
-                product=product,
-                movement_type=StockMovement.MovementType.SALE,
-                quantity=-quantity,
-                note=f"Sold via receipt {sale.receipt_number}",
-                performed_by=cashier,
-            )
-
-        SaleItem.objects.bulk_create(sale_items)
-
-        discount = Decimal("0.00")
-        tax = Decimal("0.00")
-        total = subtotal - discount + tax
-
-        amount_tendered = None
-        change_due = Decimal("0.00")
-        if payment_method == "CASH":
-            # Round up tendered amount to a "natural" denomination
-            denominations = [50, 100, 200, 500, 1000]
-            amount_tendered = next((d for d in denominations if d >= total), total)
-            amount_tendered = Decimal(amount_tendered)
-            change_due = max(amount_tendered - total, Decimal("0.00"))
-
-        sale.subtotal = subtotal
-        sale.discount = discount
-        sale.tax = tax
-        sale.total = total
-        sale.amount_tendered = amount_tendered
-        sale.change_due = change_due
-        sale.save(update_fields=["subtotal", "discount", "tax", "total", "amount_tendered", "change_due"])
-
-        # Link an M-Pesa Payment record for MPESA-paid sales
-        if payment_method == "MPESA":
-            Payment.objects.create(
-                supermarket=supermarket,
-                initiated_by=cashier,
-                purpose=Payment.Purpose.OTHER,
-                amount=total,
-                phone_number=sale.customer_phone or f"07{random.randint(10000000, 99999999)}",
-                status=Payment.Status.SUCCESS,
-                mpesa_receipt_number=f"R{uuid.uuid4().hex[:8].upper()}",
-                result_code="0",
-                result_desc="The service request is processed successfully.",
-            )
-
-        return sale

@@ -2,8 +2,8 @@ import React, { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useSession } from "../context/SessionContext.jsx";
+import { getSubscription } from "../services/api";
 
-// Navigation items for page title lookup
 const NAV_ITEMS = [
   { to: "/", icon: "bi-speedometer2", label: "Dashboard", roles: null },
   { to: "/pos", icon: "bi-cart4", label: "POS / Till", roles: null },
@@ -23,12 +23,60 @@ export default function Navbar() {
   const navigate = useNavigate();
   const location = useLocation();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  
+  // Subscription balance state
+  const [subscriptionBalance, setSubscriptionBalance] = useState(null);
+  const [isUnlimited, setIsUnlimited] = useState(false);
+  const [hasQueued, setHasQueued] = useState(false);
+  const [loadingBalance, setLoadingBalance] = useState(true);
+  const [isLocked, setIsLocked] = useState(false);
 
+  // Initial load
   useEffect(() => {
     refreshSession().catch(() => {});
   }, [refreshSession]);
 
-  // Check sidebar state on mount and when it changes
+  // Fetch subscription balance with auto-refresh
+  useEffect(() => {
+    const fetchSubscriptionBalance = async () => {
+      try {
+        setLoadingBalance(true);
+        const response = await getSubscription();
+        const data = response.data;
+        
+        setSubscriptionBalance(data.total_sales_remaining);
+        setIsUnlimited(data.is_unlimited);
+        setHasQueued((data.queued?.length || 0) > 0);
+        setIsLocked(!data.has_quota);
+      } catch (error) {
+        console.error("Failed to fetch subscription balance:", error);
+        setSubscriptionBalance(null);
+      } finally {
+        setLoadingBalance(false);
+      }
+    };
+
+    // Initial fetch
+    fetchSubscriptionBalance();
+    
+    // Auto-refresh every 5 seconds (smooth and frequent)
+    const interval = setInterval(fetchSubscriptionBalance, 5000);
+    
+    // Also refresh when the page becomes visible again
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchSubscriptionBalance();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  // Sidebar state management
   useEffect(() => {
     const sidebar = document.getElementById("app-sidebar");
     if (sidebar) {
@@ -36,7 +84,6 @@ export default function Navbar() {
       setIsSidebarOpen(isOpen);
     }
 
-    // Listen for sidebar state changes
     const observer = new MutationObserver(() => {
       const sidebar = document.getElementById("app-sidebar");
       if (sidebar) {
@@ -51,7 +98,7 @@ export default function Navbar() {
     return () => observer.disconnect();
   }, []);
 
-  // Close sidebar when route changes (only on mobile)
+  // Close sidebar on mobile route change
   useEffect(() => {
     if (window.innerWidth <= 768) {
       closeSidebar();
@@ -80,10 +127,6 @@ export default function Navbar() {
     navigate("/login");
   };
 
-  const isLocked = session?.status === "LOCKED";
-  const remaining = session ? Math.max(session.sales_limit - session.sales_count, 0) : null;
-
-  // Get user initials for avatar
   const getInitials = () => {
     if (user?.first_name && user?.last_name) {
       return (user.first_name[0] + user.last_name[0]).toUpperCase();
@@ -97,11 +140,48 @@ export default function Navbar() {
     return "U";
   };
 
-  // Get current page title from path
   const getPageTitle = () => {
     const path = location.pathname;
     const item = NAV_ITEMS.find(item => item.to === path);
     return item?.label || "Dashboard";
+  };
+
+  // Balance display helpers
+  const getBalanceDisplay = () => {
+    if (loadingBalance) return "⟳ Loading...";
+    if (isUnlimited) return "♾️ Unlimited";
+    if (subscriptionBalance === null || subscriptionBalance === undefined) return "No subscription";
+    if (isLocked) return "🔒 Locked - 0 sales";
+    if (subscriptionBalance === 0 && hasQueued) return "0 (queued available)";
+    if (subscriptionBalance === 0) return "0 sales left";
+    if (subscriptionBalance === 1) return "1 sale left";
+    return `${subscriptionBalance} sales left`;
+  };
+
+  const getBalanceColor = () => {
+    if (loadingBalance) return "var(--color-text-muted)";
+    if (isUnlimited) return "var(--color-primary)";
+    if (subscriptionBalance === null || subscriptionBalance === undefined) return "var(--color-text-muted)";
+    if (isLocked || subscriptionBalance === 0) return "var(--color-danger)";
+    if (subscriptionBalance <= 5) return "var(--color-warning)";
+    return "var(--color-success)";
+  };
+
+  const getBalanceIcon = () => {
+    if (loadingBalance) return "bi-arrow-repeat";
+    if (isUnlimited) return "bi-infinity";
+    if (subscriptionBalance === null || subscriptionBalance === undefined) return "bi-exclamation-circle";
+    if (isLocked || subscriptionBalance === 0) return "bi-exclamation-triangle";
+    if (subscriptionBalance <= 5) return "bi-hourglass-split";
+    return "bi-check-circle";
+  };
+
+  const getBackgroundColor = () => {
+    if (loadingBalance) return "var(--color-bg)";
+    if (isUnlimited) return "var(--color-primary-50)";
+    if (isLocked || subscriptionBalance === 0) return "var(--color-danger-50)";
+    if (subscriptionBalance <= 5) return "var(--color-warning-50)";
+    return "var(--color-success-50)";
   };
 
   return (
@@ -122,12 +202,66 @@ export default function Navbar() {
           <span className="current">{getPageTitle()}</span>
         </div>
 
-        {session && (
-          <span className={`navbar-session-pill${isLocked ? " locked" : ""}`}>
-            <i className={`bi ${isLocked ? "bi-lock-fill" : "bi-unlock-fill"}`}></i>
-            <span className="pill-text">{isLocked ? "Session Locked" : `${remaining} sales left`}</span>
-          </span>
-        )}
+        {/* Single Subscription Balance Pill - Auto-refreshes every 5 seconds */}
+        <span 
+          className="navbar-balance-pill"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            padding: "5px 14px",
+            borderRadius: "var(--radius-full)",
+            fontSize: "0.78rem",
+            fontWeight: "600",
+            background: getBackgroundColor(),
+            border: `1.5px solid ${getBalanceColor()}`,
+            color: getBalanceColor(),
+            cursor: "pointer",
+            transition: "all 0.3s ease",
+            minWidth: "120px",
+            justifyContent: "center"
+          }}
+          onClick={() => navigate("/subscription")}
+          title="Click to view subscription details"
+        >
+          <i 
+            className={`bi ${getBalanceIcon()}`}
+            style={{
+              animation: loadingBalance ? "spin 1s linear infinite" : "none"
+            }}
+          ></i>
+          <span>{getBalanceDisplay()}</span>
+          {hasQueued && subscriptionBalance !== 0 && (
+            <span 
+              style={{
+                background: "var(--color-primary)",
+                color: "#fff",
+                borderRadius: "var(--radius-full)",
+                padding: "0 8px",
+                fontSize: "0.6rem",
+                fontWeight: "700",
+                marginLeft: "2px"
+              }}
+            >
+              +{subscriptionBalance > 0 ? "queued" : ""}
+            </span>
+          )}
+          {isLocked && (
+            <span 
+              style={{
+                background: "var(--color-danger)",
+                color: "#fff",
+                borderRadius: "var(--radius-full)",
+                padding: "0 8px",
+                fontSize: "0.6rem",
+                fontWeight: "700",
+                marginLeft: "2px"
+              }}
+            >
+              LOCKED
+            </span>
+          )}
+        </span>
       </div>
 
       <div className="navbar-right">

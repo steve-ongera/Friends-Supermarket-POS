@@ -119,6 +119,9 @@ class Package(models.Model):
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        ordering = ["unlock_price"]
+
     def __str__(self):
         limit = self.daily_free_sales if self.daily_free_sales is not None else "unlimited"
         return f"{self.name} ({limit} sales/day, KES {self.unlock_price} to unlock)"
@@ -190,11 +193,7 @@ class Subscription(models.Model):
         help_text="Hard expiry. After this, the subscription is expired even "
                   "if sales_remaining > 0."
     )
-    created_at = models.DateTimeField(
-        auto_now_add=True,
-        null=True,
-        blank=True,
-    )
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         # FIFO: oldest purchase consumed first
@@ -371,6 +370,7 @@ class Category(models.Model):
     class Meta:
         unique_together = ("supermarket", "name")
         verbose_name_plural = "Categories"
+        ordering = ["name"]
 
     def __str__(self):
         return self.name
@@ -385,6 +385,9 @@ class Supplier(models.Model):
     email = models.EmailField(blank=True)
     address = models.CharField(max_length=200, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
 
     def __str__(self):
         return self.name

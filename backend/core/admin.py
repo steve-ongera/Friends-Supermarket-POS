@@ -1,233 +1,213 @@
-# """
 # core/admin.py
-# Friends Supermarket POS & Inventory SaaS — Django Admin registration
-# """
+from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.utils.html import format_html
+from django.db.models import Sum, F
+from .models import (
+    Supermarket, User, Package, Subscription, SalesSession,
+    Payment, Category, Supplier, Product, StockMovement, Sale, SaleItem,
+)
 
-# from django.contrib import admin
-# from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-# from django.db import models as django_models
-
-# from .models import (
-#     Supermarket,
-#     User,
-#     Package,
-#     Subscription,
-#     SalesSession,
-#     Payment,
-#     Category,
-#     Supplier,
-#     Product,
-#     StockMovement,
-#     Sale,
-#     SaleItem,
-# )
+# ---------------------------------------------------------------------------
+# Site branding
+# ---------------------------------------------------------------------------
+admin.site.site_header  = "Friends POS"
+admin.site.site_title   = "Friends POS Admin"
+admin.site.index_title  = "Dashboard"
 
 
-# # ---------------------------------------------------------------------------
-# # Tenant / Business
-# # ---------------------------------------------------------------------------
-
-# @admin.register(Supermarket)
-# class SupermarketAdmin(admin.ModelAdmin):
-#     list_display = ("name", "location", "phone_number", "mpesa_shortcode", "is_active", "created_at")
-#     list_filter = ("is_active", "created_at")
-#     search_fields = ("name", "slug", "phone_number", "email", "kra_pin")
-#     prepopulated_fields = {"slug": ("name",)}
-#     readonly_fields = ("id", "created_at", "updated_at")
-#     ordering = ("-created_at",)
-
-
-# # ---------------------------------------------------------------------------
-# # Users / Staff
-# # ---------------------------------------------------------------------------
-
-# @admin.register(User)
-# class UserAdmin(BaseUserAdmin):
-#     """Extends Django's built-in UserAdmin with our custom fields."""
-
-#     list_display = (
-#         "username", "full_name", "role", "supermarket", "phone_number",
-#         "is_locked", "is_active", "is_staff",
-#     )
-#     list_filter = ("role", "is_locked", "is_active", "supermarket")
-#     search_fields = ("username", "first_name", "last_name", "email", "phone_number")
-#     ordering = ("username",)
-
-#     fieldsets = BaseUserAdmin.fieldsets + (
-#         ("Friends POS Details", {
-#             "fields": ("supermarket", "role", "phone_number", "is_locked"),
-#         }),
-#     )
-#     add_fieldsets = BaseUserAdmin.add_fieldsets + (
-#         ("Friends POS Details", {
-#             "fields": ("supermarket", "role", "phone_number"),
-#         }),
-#     )
-
-#     @admin.display(description="Full Name")
-#     def full_name(self, obj):
-#         return obj.get_full_name() or "-"
+# ---------------------------------------------------------------------------
+# Supermarket
+# ---------------------------------------------------------------------------
+@admin.register(Supermarket)
+class SupermarketAdmin(admin.ModelAdmin):
+    list_display  = ("name", "slug", "location", "phone_number", "email", "kra_pin", "is_active", "created_at")
+    list_filter   = ("is_active",)
+    search_fields = ("name", "slug", "phone_number", "email", "kra_pin")
+    prepopulated_fields = {"slug": ("name",)}
+    readonly_fields = ("created_at", "updated_at")
+    fieldsets = (
+        ("Business Info", {
+            "fields": ("name", "slug", "location", "phone_number", "email", "kra_pin", "logo"),
+        }),
+        ("M-Pesa", {
+            "fields": ("mpesa_shortcode",),
+        }),
+        ("Status", {
+            "fields": ("is_active", "created_at", "updated_at"),
+        }),
+    )
 
 
-# # ---------------------------------------------------------------------------
-# # Billing: Package / Subscription / SalesSession / Payment
-# # ---------------------------------------------------------------------------
-
-# @admin.register(Package)
-# class PackageAdmin(admin.ModelAdmin):
-#     list_display = ("name", "daily_free_sales", "unlock_price", "session_duration_hours", "is_active")
-#     list_filter = ("is_active",)
-#     search_fields = ("name",)
-
-
-# @admin.register(Subscription)
-# class SubscriptionAdmin(admin.ModelAdmin):
-#     list_display = ("supermarket", "package", "is_active", "started_at")
-#     list_filter = ("is_active", "package")
-#     search_fields = ("supermarket__name",)
-#     autocomplete_fields = ("supermarket", "package")
-
-
-# @admin.register(SalesSession)
-# class SalesSessionAdmin(admin.ModelAdmin):
-#     list_display = (
-#         "id", "supermarket", "cashier", "package", "sales_count", "sales_limit",
-#         "status", "started_at", "locked_at",
-#     )
-#     list_filter = ("status", "supermarket", "package")
-#     search_fields = ("cashier__username", "supermarket__name")
-#     readonly_fields = ("id", "started_at", "locked_at")
-#     autocomplete_fields = ("supermarket", "cashier", "package", "unlocked_by_payment")
-#     ordering = ("-started_at",)
+# ---------------------------------------------------------------------------
+# User
+# ---------------------------------------------------------------------------
+@admin.register(User)
+class UserAdmin(BaseUserAdmin):
+    list_display  = ("username", "get_full_name", "email", "supermarket", "role", "is_locked", "is_active")
+    list_filter   = ("role", "is_locked", "is_active", "supermarket")
+    search_fields = ("username", "first_name", "last_name", "email", "phone_number")
+    autocomplete_fields = ("supermarket",)
+    fieldsets = BaseUserAdmin.fieldsets + (
+        ("POS Info", {
+            "fields": ("supermarket", "role", "phone_number", "is_locked"),
+        }),
+    )
+    add_fieldsets = BaseUserAdmin.add_fieldsets + (
+        ("POS Info", {
+            "fields": ("supermarket", "role", "phone_number"),
+        }),
+    )
 
 
-# @admin.register(Payment)
-# class PaymentAdmin(admin.ModelAdmin):
-#     list_display = (
-#         "reference_code", "supermarket", "purpose", "amount", "phone_number",
-#         "status", "mpesa_receipt_number", "created_at",
-#     )
-#     list_filter = ("status", "purpose", "supermarket")
-#     search_fields = (
-#         "reference_code", "phone_number", "mpesa_receipt_number",
-#         "checkout_request_id", "merchant_request_id",
-#     )
-#     readonly_fields = (
-#         "id", "reference_code", "merchant_request_id", "checkout_request_id",
-#         "mpesa_receipt_number", "result_code", "result_desc", "created_at", "updated_at",
-#     )
-#     autocomplete_fields = ("supermarket", "initiated_by")
-#     ordering = ("-created_at",)
+# ---------------------------------------------------------------------------
+# Package
+# ---------------------------------------------------------------------------
+@admin.register(Package)
+class PackageAdmin(admin.ModelAdmin):
+    list_display = ("name", "daily_free_sales", "unlock_price", "session_duration_hours", "is_active")
+    list_filter  = ("is_active",)
+    search_fields = ("name",)
 
 
-# # ---------------------------------------------------------------------------
-# # Inventory
-# # ---------------------------------------------------------------------------
-
-# @admin.register(Category)
-# class CategoryAdmin(admin.ModelAdmin):
-#     list_display = ("name", "supermarket", "created_at")
-#     list_filter = ("supermarket",)
-#     search_fields = ("name",)
-#     autocomplete_fields = ("supermarket",)
-
-
-# @admin.register(Supplier)
-# class SupplierAdmin(admin.ModelAdmin):
-#     list_display = ("name", "supermarket", "phone_number", "email", "created_at")
-#     list_filter = ("supermarket",)
-#     search_fields = ("name", "phone_number", "email")
-#     autocomplete_fields = ("supermarket",)
+# ---------------------------------------------------------------------------
+# Subscription
+# ---------------------------------------------------------------------------
+@admin.register(Subscription)
+class SubscriptionAdmin(admin.ModelAdmin):
+    list_display  = ("supermarket", "package", "sales_allocated", "sales_remaining", "status", "started_at", "expires_at")
+    list_filter   = ("status", "package")
+    search_fields = ("supermarket__name",)
+    autocomplete_fields = ("supermarket",)
+    readonly_fields = ("created_at", "started_at")
+    date_hierarchy = "created_at"
 
 
-# class LowStockFilter(admin.SimpleListFilter):
-#     title = "stock level"
-#     parameter_name = "stock_level"
-
-#     def lookups(self, request, model_admin):
-#         return (("low", "Low stock (at/below reorder level)"), ("ok", "Sufficient stock"))
-
-#     def queryset(self, request, queryset):
-#         if self.value() == "low":
-#             return queryset.filter(quantity_in_stock__lte=django_models.F("reorder_level"))
-#         if self.value() == "ok":
-#             return queryset.filter(quantity_in_stock__gt=django_models.F("reorder_level"))
-#         return queryset
+# ---------------------------------------------------------------------------
+# SalesSession
+# ---------------------------------------------------------------------------
+@admin.register(SalesSession)
+class SalesSessionAdmin(admin.ModelAdmin):
+    list_display  = ("cashier", "supermarket", "package", "sales_count", "sales_limit", "status", "started_at", "expires_at")
+    list_filter   = ("status", "supermarket")
+    search_fields = ("cashier__username", "supermarket__name")
+    readonly_fields = ("started_at", "locked_at")
+    date_hierarchy = "started_at"
 
 
-# @admin.register(Product)
-# class ProductAdmin(admin.ModelAdmin):
-#     list_display = (
-#         "name", "barcode", "supermarket", "category", "supplier",
-#         "selling_price", "cost_price", "quantity_in_stock", "is_low_stock_display", "is_active",
-#     )
-#     list_filter = ("supermarket", "category", "supplier", "is_active", LowStockFilter)
-#     search_fields = ("name", "barcode", "sku")
-#     autocomplete_fields = ("supermarket", "category", "supplier")
-#     readonly_fields = ("id", "created_at", "updated_at")
-#     ordering = ("name",)
-
-#     @admin.display(boolean=True, description="Low Stock")
-#     def is_low_stock_display(self, obj):
-#         return obj.is_low_stock
+# ---------------------------------------------------------------------------
+# Payment
+# ---------------------------------------------------------------------------
+@admin.register(Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display  = ("reference_code", "supermarket", "initiated_by", "purpose", "amount", "phone_number", "status", "mpesa_receipt_number", "created_at")
+    list_filter   = ("status", "purpose", "supermarket")
+    search_fields = ("reference_code", "phone_number", "mpesa_receipt_number", "checkout_request_id")
+    readonly_fields = ("reference_code", "created_at", "updated_at", "merchant_request_id", "checkout_request_id")
+    date_hierarchy = "created_at"
 
 
-# @admin.register(StockMovement)
-# class StockMovementAdmin(admin.ModelAdmin):
-#     list_display = ("product", "movement_type", "quantity", "performed_by", "created_at")
-#     list_filter = ("movement_type", "created_at")
-#     search_fields = ("product__name", "product__barcode", "note")
-#     autocomplete_fields = ("product", "performed_by")
-#     readonly_fields = ("created_at",)
-#     ordering = ("-created_at",)
+# ---------------------------------------------------------------------------
+# Category
+# ---------------------------------------------------------------------------
+@admin.register(Category)
+class CategoryAdmin(admin.ModelAdmin):
+    list_display  = ("name", "supermarket", "description", "created_at")
+    list_filter   = ("supermarket",)
+    search_fields = ("name", "supermarket__name")
+    autocomplete_fields = ("supermarket",)
 
 
-# # ---------------------------------------------------------------------------
-# # Sales / POS
-# # ---------------------------------------------------------------------------
-
-# class SaleItemInline(admin.TabularInline):
-#     model = SaleItem
-#     extra = 0
-#     readonly_fields = ("product_name", "barcode", "line_total")
-#     fields = ("product", "product_name", "barcode", "quantity", "unit_price", "line_total")
-#     autocomplete_fields = ("product",)
-
-
-# @admin.register(Sale)
-# class SaleAdmin(admin.ModelAdmin):
-#     list_display = (
-#         "receipt_number", "supermarket", "cashier", "total", "payment_method",
-#         "status", "created_at",
-#     )
-#     list_filter = ("status", "payment_method", "supermarket", "created_at")
-#     search_fields = ("receipt_number", "customer_phone", "cashier__username")
-#     autocomplete_fields = ("supermarket", "cashier", "session", "mpesa_payment")
-#     readonly_fields = ("id", "receipt_number", "qr_code", "created_at")
-#     inlines = [SaleItemInline]
-#     ordering = ("-created_at",)
-
-#     fieldsets = (
-#         (None, {
-#             "fields": (
-#                 "id", "supermarket", "cashier", "session", "receipt_number", "qr_code", "status",
-#             )
-#         }),
-#         ("Amounts", {
-#             "fields": ("subtotal", "discount", "tax", "total", "amount_tendered", "change_due"),
-#         }),
-#         ("Payment", {
-#             "fields": ("payment_method", "mpesa_payment", "customer_phone"),
-#         }),
-#         ("Timestamps", {
-#             "fields": ("created_at",),
-#         }),
-#     )
+# ---------------------------------------------------------------------------
+# Supplier
+# ---------------------------------------------------------------------------
+@admin.register(Supplier)
+class SupplierAdmin(admin.ModelAdmin):
+    list_display  = ("name", "supermarket", "phone_number", "email", "address")
+    list_filter   = ("supermarket",)
+    search_fields = ("name", "phone_number", "email")
+    autocomplete_fields = ("supermarket",)
 
 
-# @admin.register(SaleItem)
-# class SaleItemAdmin(admin.ModelAdmin):
-#     list_display = ("sale", "product_name", "barcode", "quantity", "unit_price", "line_total")
-#     search_fields = ("product_name", "barcode", "sale__receipt_number")
-#     autocomplete_fields = ("sale", "product")
-#     readonly_fields = ("line_total",)
+# ---------------------------------------------------------------------------
+# Product
+# ---------------------------------------------------------------------------
+@admin.register(Product)
+class ProductAdmin(admin.ModelAdmin):
+    list_display  = ("name", "barcode", "sku", "supermarket", "category", "selling_price", "cost_price", "quantity_in_stock", "low_stock_badge", "is_active")
+    list_filter   = ("supermarket", "category", "is_active")
+    search_fields = ("name", "barcode", "sku")
+    autocomplete_fields = ("supermarket", "category", "supplier")
+    readonly_fields = ("created_at", "updated_at")
+    date_hierarchy = "created_at"
+    fieldsets = (
+        ("Identity", {
+            "fields": ("supermarket", "name", "barcode", "sku", "image", "unit", "category", "supplier"),
+        }),
+        ("Pricing & Stock", {
+            "fields": ("cost_price", "selling_price", "quantity_in_stock", "reorder_level"),
+        }),
+        ("Status", {
+            "fields": ("is_active", "created_at", "updated_at"),
+        }),
+    )
+
+    @admin.display(description="Low Stock", boolean=True)
+    def low_stock_badge(self, obj):
+        return obj.is_low_stock
+
+
+# ---------------------------------------------------------------------------
+# StockMovement
+# ---------------------------------------------------------------------------
+@admin.register(StockMovement)
+class StockMovementAdmin(admin.ModelAdmin):
+    list_display  = ("product", "movement_type", "quantity", "performed_by", "note", "created_at")
+    list_filter   = ("movement_type", "product__supermarket")
+    search_fields = ("product__name", "product__barcode", "note")
+    readonly_fields = ("created_at",)
+    date_hierarchy = "created_at"
+    autocomplete_fields = ("product", "performed_by")
+
+
+# ---------------------------------------------------------------------------
+# Sale + SaleItem inline
+# ---------------------------------------------------------------------------
+class SaleItemInline(admin.TabularInline):
+    model  = SaleItem
+    extra  = 0
+    fields = ("product", "product_name", "barcode", "quantity", "unit_price", "line_total")
+    readonly_fields = ("line_total", "product_name", "barcode")
+    autocomplete_fields = ("product",)
+
+
+@admin.register(Sale)
+class SaleAdmin(admin.ModelAdmin):
+    list_display  = ("receipt_number", "supermarket", "cashier", "payment_method", "subtotal", "discount", "tax", "total", "status", "created_at")
+    list_filter   = ("status", "payment_method", "supermarket")
+    search_fields = ("receipt_number", "cashier__username", "customer_phone")
+    readonly_fields = ("receipt_number", "created_at", "subtotal", "total", "change_due")
+    date_hierarchy = "created_at"
+    inlines = [SaleItemInline]
+    fieldsets = (
+        ("Transaction", {
+            "fields": ("supermarket", "cashier", "session", "receipt_number", "status"),
+        }),
+        ("Totals", {
+            "fields": ("subtotal", "discount", "tax", "total"),
+        }),
+        ("Payment", {
+            "fields": ("payment_method", "mpesa_payment", "amount_tendered", "change_due", "customer_phone"),
+        }),
+        ("Meta", {
+            "fields": ("qr_code", "created_at"),
+        }),
+    )
+
+
+@admin.register(SaleItem)
+class SaleItemAdmin(admin.ModelAdmin):
+    list_display  = ("product_name", "barcode", "quantity", "unit_price", "line_total", "sale")
+    search_fields = ("product_name", "barcode")
+    readonly_fields = ("line_total",)
+    autocomplete_fields = ("sale", "product")
