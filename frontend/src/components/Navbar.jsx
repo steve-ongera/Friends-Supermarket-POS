@@ -23,7 +23,7 @@ export default function Navbar() {
   const navigate = useNavigate();
   const location = useLocation();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  
+
   // Subscription balance state
   const [subscriptionBalance, setSubscriptionBalance] = useState(null);
   const [isUnlimited, setIsUnlimited] = useState(false);
@@ -43,7 +43,7 @@ export default function Navbar() {
         setLoadingBalance(true);
         const response = await getSubscription();
         const data = response.data;
-        
+
         setSubscriptionBalance(data.total_sales_remaining);
         setIsUnlimited(data.is_unlimited);
         setHasQueued((data.queued?.length || 0) > 0);
@@ -58,10 +58,10 @@ export default function Navbar() {
 
     // Initial fetch
     fetchSubscriptionBalance();
-    
+
     // Auto-refresh every 5 seconds (smooth and frequent)
     const interval = setInterval(fetchSubscriptionBalance, 5000);
-    
+
     // Also refresh when the page becomes visible again
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -69,11 +69,29 @@ export default function Navbar() {
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    
+
     return () => {
       clearInterval(interval);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
+  }, []);
+
+  // Set the correct default sidebar state on first load.
+  // The sidebar CSS now hides it by default on ALL screen sizes
+  // (this is what fixes it not hiding on laptop screens), so we
+  // need JS to decide the sensible starting point: open on desktop/
+  // laptop, closed on mobile.
+  useEffect(() => {
+    const sidebar = document.getElementById("app-sidebar");
+    if (!sidebar) return;
+
+    if (window.innerWidth > 768) {
+      sidebar.classList.add("open");
+      setIsSidebarOpen(true);
+    } else {
+      sidebar.classList.remove("open");
+      setIsSidebarOpen(false);
+    }
   }, []);
 
   // Sidebar state management
@@ -187,8 +205,8 @@ export default function Navbar() {
   return (
     <header className="navbar">
       <div className="navbar-left">
-        <button 
-          className="navbar-toggle" 
+        <button
+          className="navbar-toggle"
           onClick={toggleSidebar}
           aria-label="Toggle sidebar"
           title={isSidebarOpen ? "Close sidebar" : "Open sidebar"}
@@ -203,7 +221,7 @@ export default function Navbar() {
         </div>
 
         {/* Single Subscription Balance Pill - Auto-refreshes every 5 seconds */}
-        <span 
+        <span
           className="navbar-balance-pill"
           style={{
             display: "inline-flex",
@@ -224,7 +242,7 @@ export default function Navbar() {
           onClick={() => navigate("/subscription")}
           title="Click to view subscription details"
         >
-          <i 
+          <i
             className={`bi ${getBalanceIcon()}`}
             style={{
               animation: loadingBalance ? "spin 1s linear infinite" : "none"
@@ -232,7 +250,7 @@ export default function Navbar() {
           ></i>
           <span>{getBalanceDisplay()}</span>
           {hasQueued && subscriptionBalance !== 0 && (
-            <span 
+            <span
               style={{
                 background: "var(--color-primary)",
                 color: "#fff",
@@ -247,7 +265,7 @@ export default function Navbar() {
             </span>
           )}
           {isLocked && (
-            <span 
+            <span
               style={{
                 background: "var(--color-danger)",
                 color: "#fff",

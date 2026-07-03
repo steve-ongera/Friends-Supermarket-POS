@@ -153,13 +153,23 @@ textarea {
   min-height: 100vh;
 }
 
+/* Sidebar is hidden by default (translateX(-100%)) on ALL screen
+   sizes now. .app-main no longer reserves permanent space for it —
+   space is only reserved on desktop, and only while it's open. */
 .app-main {
   flex: 1;
   display: flex;
   flex-direction: column;
-  margin-left: var(--sidebar-width);
+  margin-left: 0;
   min-width: 0;
   transition: margin-left var(--transition-smooth);
+}
+
+/* Only push content over on desktop/laptop when the sidebar is open */
+@media (min-width: 769px) {
+  .sidebar.open ~ .app-main {
+    margin-left: var(--sidebar-width);
+  }
 }
 
 .app-content {
@@ -211,9 +221,19 @@ textarea {
   display: flex;
   flex-direction: column;
   z-index: var(--z-sidebar);
+  /* Hidden by default on ALL screen sizes. Toggling the .open class
+     (via the navbar hamburger) is what reveals it, on desktop and
+     mobile alike. This is the core fix: previously this transform
+     only existed inside the max-width:768px media query, so on
+     laptop screens the sidebar had no way to hide. */
+  transform: translateX(-100%);
   transition: transform var(--transition-smooth);
   box-shadow: 4px 0 24px rgba(0, 0, 0, 0.08);
   backdrop-filter: blur(2px);
+}
+
+.sidebar.open {
+  transform: translateX(0);
 }
 
 .sidebar-brand {
@@ -255,9 +275,10 @@ textarea {
   letter-spacing: 0.3px;
 }
 
-/* Sidebar close button (visible on mobile) */
+/* Sidebar close button — now visible on ALL screen sizes, since the
+   sidebar can be closed on desktop too. */
 .sidebar-close-btn {
-  display: none;
+  display: block;
   background: none;
   border: none;
   color: rgba(255, 255, 255, 0.6);
@@ -366,7 +387,9 @@ textarea {
   margin-right: 6px;
 }
 
-/* Sidebar Overlay */
+/* Sidebar Overlay — dark backdrop, shown behind the sidebar when
+   open. Kept mobile-only below; on desktop the content simply
+   shifts over instead of being covered. */
 .sidebar-overlay {
   display: none;
   position: fixed;
@@ -382,7 +405,7 @@ textarea {
   opacity: 1;
 }
 
-/* When sidebar is open on mobile, show overlay */
+/* When sidebar is open on mobile, show the dark overlay */
 @media (max-width: 768px) {
   .sidebar.open ~ .sidebar-overlay {
     display: block;
@@ -1156,25 +1179,17 @@ input[type="number"] {
   .navbar-breadcrumb .brand-name {
     display: none;
   }
-  
+
   .navbar-breadcrumb .separator {
     display: none;
   }
 }
 
 @media (max-width: 768px) {
-  .sidebar {
-    transform: translateX(-100%);
-    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-
-  .sidebar.open {
-    transform: translateX(0);
-  }
-
-  .app-main {
-    margin-left: 0;
-  }
+  /* NOTE: sidebar hide/show + .app-main margin reset now live
+     globally above (not just here), so the sidebar can also be
+     hidden on desktop/laptop screens. This block only keeps the
+     remaining truly mobile-only tweaks. */
 
   /* Show hamburger icon on mobile too */
   .navbar-toggle {
@@ -1193,7 +1208,7 @@ input[type="number"] {
     padding: 4px 10px;
     font-size: 0.7rem;
   }
-  
+
   .navbar-session-pill .pill-text {
     display: none;
   }
@@ -1202,7 +1217,7 @@ input[type="number"] {
   .logout-btn .logout-text {
     display: none;
   }
-  
+
   .logout-btn {
     padding: 6px 10px;
     font-size: 0.8rem;
@@ -1231,11 +1246,6 @@ input[type="number"] {
     height: 60px;
   }
 
-  /* Sidebar close button */
-  .sidebar-close-btn {
-    display: block;
-  }
-  
   .sidebar-brand {
     padding: 16px 16px 16px 18px;
   }
@@ -1533,5 +1543,5 @@ input[type="number"] {
 }
 
 /* ============================================================
-   End of Styles — 3500+ lines of clean, modern UI/UX
+   End of Styles
    ============================================================ */
