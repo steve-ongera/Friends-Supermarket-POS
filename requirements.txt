@@ -1,0 +1,37 @@
+# ============================================
+# Friends POS - Backend (Django / DRF)
+# Python 3.11+
+# ============================================
+
+# --- Core framework ---
+Django>=5.0,<5.3
+djangorestframework>=3.15,<4.0
+djangorestframework-simplejwt>=5.3,<6.0   # JWT auth (login/register)
+django-cors-headers>=4.3,<5.0             # CORS_ALLOWED_ORIGINS
+django-filter>=24.1                       # filtering products/sales/stock
+
+# --- Configuration / environment ---
+python-dotenv>=1.0,<2.0                   # loads backend/.env
+dj-database-url>=2.1,<3.0                 # parses DATABASE_URL
+
+# --- Database ---
+psycopg2-binary>=2.9,<3.0                 # PostgreSQL (SQLite needs nothing extra)
+
+# --- M-Pesa (Daraja STK Push) ---
+requests>=2.31,<3.0                       # access token + STK Push + callbacks
+
+# --- Receipt QR codes ---
+qrcode[pil]>=7.4                          # qrcode + Pillow
+Pillow>=10.3                              # image handling (QR, logos)
+
+# --- Demo data (seed_data command) ---
+Faker>=24.0                               # generates ~6 months of demo data
+
+# --- Production / deployment ---
+gunicorn>=22.0                            # WSGI server (api.friendspos.com)
+whitenoise>=6.6,<7.0                      # static files serving
+django-storages>=1.14                     # S3-compatible media storage
+boto3>=1.34                               # S3 backend for django-storages
+
+# --- Optional: API docs ---
+# drf-spectacular>=0.27                   # OpenAPI / Swagger docs
